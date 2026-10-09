@@ -1,0 +1,10 @@
+# Inferencia / evaluación con modelos (GPU recomendada: RTX 3080)
+numpy
+opencv-python
+torch
+transformers
+accelerate  # requerido por Trainer
+supervision<0.31  # sv.ByteTrack está deprecado desde 0.28 y se elimina en 0.31
+easyocr
+rfdetr
+Pillow
