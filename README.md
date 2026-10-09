@@ -44,6 +44,7 @@ alpr/
   data/             ccpd.py (CCPD→COCO) · splits.py (particiones sin fuga)
   train/            train_rtdetr.py
   calibrate/        calibrate.py  (record → sweep)
+  tools/            cut_video.py (cortar un tramo de un video sin ffmpeg)
   evaluate/         e2e.py · ocr_eval.py · detector_eval.py · metrics.py · detection_metrics.py
 legacy/            pipelineV5.py original, para comparar salidas contra el refactor
 tests/              56 tests: lógica pura + pipeline real con modelos simulados
