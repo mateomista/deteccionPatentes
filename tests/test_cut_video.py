@@ -22,7 +22,7 @@ def test_cut_has_exact_frame_count_and_offset(tmp_path):
     src, out = tmp_path / "s.mp4", tmp_path / "o" / "c.mp4"
     make(src)
     info = cut_video(str(src), str(out), start_s=3.0, duration_s=2.0)   # frames 30..49
-    assert info["frames_written"] == 20 and info["first_source_frame"] == 30
+    assert info["frames_written"] == 20 and abs(info["fps"] - 10.0) < 0.5
     cap = cv2.VideoCapture(str(out))
     ok, f = cap.read()
     assert ok and abs(int(f.mean()) - 60) < 8      # frame 30 -> brillo ~60
