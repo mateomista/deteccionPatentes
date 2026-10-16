@@ -262,3 +262,31 @@ def test_files_not_enqueued_because_queue_is_full_are_picked_up_by_the_next_scan
     proc.queue.get_nowait(); proc.pending.clear()
     proc.scan_pending()                                       # el segundo se recupera
     assert proc.queue.qsize() == 1
+
+
+# ------------------------------------------- contrato con el productor (video en el nombre)
+def test_candidate_accepts_video_suffix_and_keeps_legacy_names(tmp_path):
+    from alpr.classify.files import extract_video
+    new = make_image(tmp_path / "vehiculo_17__trafico01.jpg")
+    old = make_image(tmp_path / "vehiculo_18.jpg")
+    assert is_candidate(new, tmp_path) and is_candidate(old, tmp_path)
+    assert (extract_track_id(new), extract_video(new)) == (17, "trafico01")
+    assert (extract_track_id(old), extract_video(old)) == (18, None)
+    (tmp_path / "vehiculo_19__trafico01.jpg.tmp").write_bytes(b"x")          # escritura en curso
+    assert not is_candidate(tmp_path / "vehiculo_19__trafico01.jpg.tmp", tmp_path)
+
+
+def test_result_carries_the_video_from_the_filename(tmp_path, fast_stability):
+    inp, writer, proc = build(tmp_path)
+    proc.process_file(make_image(inp / "vehiculo_5__trafico01.jpg", seed=1).resolve())
+    proc.process_file(make_image(inp / "vehiculo_6.jpg", seed=2).resolve())
+    r = rows(writer.path)
+    assert [(x["track_id"], x["video"]) for x in r] == [(5, "trafico01"), (6, None)]
+
+
+def test_error_record_also_carries_the_video(tmp_path, fast_stability):
+    inp, writer, proc = build(tmp_path, max_retries=1)
+    (inp / "vehiculo_7__v.jpg").write_bytes(b"corrupta")
+    proc.process_file((inp / "vehiculo_7__v.jpg").resolve())
+    r = rows(writer.path)[0]
+    assert r["video"] == "v" and r["estado"].startswith("error:")

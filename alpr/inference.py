@@ -53,14 +53,15 @@ def thresholds_from_args(args):
     return th.replace(**overrides) if overrides else th
 
 
-def options_from_args(args, snapshots_dir="snapshots", debug_crops=False):
+def options_from_args(args, snapshots_dir="snapshots", debug_crops=False, export_vehicle_dir=None):
     return PipelineOptions(
         plate_model=args.plate_model, snapshots_dir=snapshots_dir, max_frames=args.max_frames,
         dedup_seconds=args.dedup_seconds, fp16=args.fp16, dual_ocr=args.dual_ocr,
         ocr_max_attempts=args.ocr_max_attempts, disable_focus_mask=args.disable_focus_mask,
         debug_crops=debug_crops, rtdetr_batch=args.rtdetr_batch,
         sequential_rtdetr=args.sequential_rtdetr, strict_plate=args.strict_plate,
-        flush_unfinalized=args.flush_unfinalized, cudnn_benchmark=args.cudnn_benchmark)
+        flush_unfinalized=args.flush_unfinalized, cudnn_benchmark=args.cudnn_benchmark,
+        export_vehicle_dir=export_vehicle_dir)
 
 
 def main(argv=None):
@@ -70,6 +71,9 @@ def main(argv=None):
     p.add_argument("--output-json", default="detecciones_alpr.json")
     p.add_argument("--output-video", default=os.path.join("outputs", "alpr.mp4"))
     p.add_argument("--debug-crops", action="store_true")
+    p.add_argument("--export-vehicle-crops", default=None, metavar="DIR",
+                   help="Exporta el recorte del vehículo de cada patente registrada (contrato con "
+                        "alpr.classify: vehiculo_<track_id>__<video>.jpg). Por defecto no exporta")
     add_pipeline_args(p)
     add_threshold_args(p)
     args = p.parse_args(argv)
@@ -86,7 +90,8 @@ def main(argv=None):
     from .models import ModelBundle
     from .pipeline import ALPRPipeline
     models = ModelBundle(args.plate_model, cudnn_benchmark=args.cudnn_benchmark)
-    pipeline = ALPRPipeline(models, options_from_args(args, args.snapshots_dir, args.debug_crops), th)
+    pipeline = ALPRPipeline(models, options_from_args(args, args.snapshots_dir, args.debug_crops,
+                                                        args.export_vehicle_crops), th)
     pipeline.run_video(args.source, output_json=args.output_json, output_video=args.output_video)
 
 

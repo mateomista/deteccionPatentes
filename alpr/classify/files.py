@@ -27,6 +27,12 @@ def extract_track_id(path: Path) -> int:
     return int(match.group(1))
 
 
+def extract_video(path: Path):
+    """Nombre del video si el archivo es vehiculo_<track_id>__<video>.<ext>; None si es el formato antiguo."""
+    match = TRACK_PATTERN.match(path.stem)
+    return match.group(2) if match else None
+
+
 def is_candidate(path: Path, input_dir: Path) -> bool:
     """
     Verifica si el archivo es un candidato legítimo para procesamiento:

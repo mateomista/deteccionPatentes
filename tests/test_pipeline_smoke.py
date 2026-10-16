@@ -169,3 +169,65 @@ def test_successful_vehicle_has_no_track_level_discard(tmp_path, video):
 def test_log_discards_can_be_disabled(tmp_path, video):
     pipe, _ = build(tmp_path, reader=BadReader(), log_discards=False)
     assert pipe.run_video(video).discards == []
+
+
+# ------------------------------------------------ productor: exportación de recortes de vehículo
+def test_export_writes_one_vehicle_crop_per_registered_plate(tmp_path, video):
+    export = tmp_path / "crops"
+    pipe, _ = build(tmp_path, export_vehicle_dir=str(export))
+    res = pipe.run_video(video)
+    assert len(res.detections) == 1
+    tid = res.detections[0]["id_vehiculo"]
+    files = sorted(p.name for p in export.iterdir())
+    assert files == [f"vehiculo_{tid}__trafico01.jpg"]                  # video en el nombre
+    img = cv2.imdecode(np.fromfile(str(export / files[0]), dtype=np.uint8), cv2.IMREAD_COLOR)
+    assert img is not None and img.shape[1] >= 64 and img.shape[0] >= 48   # vehículo completo, no la patente
+    assert res.stats["vehicle_crops_exported"] == 1
+    assert not list(export.glob("*.tmp"))
+
+
+def test_export_does_not_change_the_detections(tmp_path, video):
+    """Con y sin exportar, las detecciones son idénticas (la exportación es un efecto lateral)."""
+    off, _ = build(tmp_path)
+    r_off = off.run_video(video)
+    on, _ = build(tmp_path, export_vehicle_dir=str(tmp_path / "crops"))
+    r_on = on.run_video(video)
+    assert [key(d) for d in r_off.detections] == [key(d) for d in r_on.detections]
+    assert [(d["confianza_ocr_promedio"], d["tipo_vehiculo"]) for d in r_off.detections] == \
+           [(d["confianza_ocr_promedio"], d["tipo_vehiculo"]) for d in r_on.detections]
+
+
+def test_export_is_off_by_default(tmp_path, video):
+    pipe, _ = build(tmp_path)
+    res = pipe.run_video(video)
+    assert res.stats["vehicle_crops_exported"] == 0 and pipe.export_dir is None
+
+
+def test_export_includes_recovered_detections(tmp_path, video):
+    export = tmp_path / "crops"
+    pipe, _ = build(tmp_path, th=Thresholds(min_votes=50, early_finalize_votes=50),
+                    export_vehicle_dir=str(export))
+    res = pipe.run_video(video)                       # sin consenso: se recupera como track_lost
+    assert [d["finalization"] for d in res.detections] == ["track_lost"]
+    assert len(list(export.iterdir())) == 1           # la detección recuperada también se exporta
+
+
+def test_producer_to_consumer_end_to_end(tmp_path, video):
+    """Pipeline exportando -> clasificador (mock) -> unión con las detecciones."""
+    import json
+    from alpr.classify.cli import main as classify_main
+    from alpr.tools.join_results import join_results, load_jsonl
+
+    export = tmp_path / "crops"
+    pipe, _ = build(tmp_path, export_vehicle_dir=str(export))
+    res = pipe.run_video(video)
+    results_file = tmp_path / "clasif.jsonl"
+    classify_main(["--input-dir", str(export), "--results-file", str(results_file),
+                   "--mock", "--single-run", "--device", "cpu"])
+    rows_ = load_jsonl(results_file)
+    assert [(r["track_id"], r["video"], r["estado"]) for r in rows_] == \
+           [(res.detections[0]["id_vehiculo"], "trafico01", "mock")]
+    joined, no_class, orphans = join_results(res.detections, rows_, "trafico01")
+    assert joined[0]["clasificacion"]["estado"] == "mock" and not no_class and not orphans
+    assert not list(export.glob("vehiculo_*.jpg"))                  # el consumidor los movió a procesados/
+    json.dumps(joined)

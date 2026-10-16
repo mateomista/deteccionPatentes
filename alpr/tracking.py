@@ -20,6 +20,7 @@ class PlateEvidence:
         self.processed = None       # [MEJORA-v3 #11] lo que vio el OCR
         self.frame = -1
         self.bbox = None
+        self.vehicle_crop = None    # recorte del VEHÍCULO completo (solo si se exporta)
 
 
 class VehicleTrack:
@@ -37,7 +38,8 @@ class VehicleTrack:
 
         self.best_plate_text = None
 
-    def add_vote(self, text, confidence, frame_idx, plate_crop, processed_crop, vehicle_bbox):
+    def add_vote(self, text, confidence, frame_idx, plate_crop, processed_crop, vehicle_bbox,
+                 vehicle_crop=None):
         self.votes[text] = self.votes.get(text, 0.0) + float(confidence)
         self.vote_counts[text] = self.vote_counts.get(text, 0) + 1
 
@@ -49,6 +51,7 @@ class VehicleTrack:
             ev.processed = processed_crop.copy() if processed_crop is not None else None
             ev.frame = frame_idx
             ev.bbox = vehicle_bbox.copy() if vehicle_bbox is not None else None
+            ev.vehicle_crop = vehicle_crop.copy() if vehicle_crop is not None else None
 
     def get_consensus_plate(self):
         """Patente ganadora por sumatoria total de confianza."""

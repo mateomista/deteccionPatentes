@@ -23,6 +23,9 @@ class ClassificationResult:
     estado: str
     fingerprint_sha256: str
     timestamp_utc: str
+    # Video de origen (viaja en el nombre del recorte); None con el nombre antiguo.
+    # La clave de correlación con las detecciones del pipeline es (video, track_id).
+    video: Optional[str] = None
 
     def to_json(self) -> str:
         return json.dumps(

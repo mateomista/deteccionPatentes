@@ -23,6 +23,7 @@ import numpy as np
 import supervision as sv
 import torch
 
+from .contracts import sanitize_video_stem, vehicle_crop_filename, write_image_atomic
 from .config import (
     CONSENSUS_REASON, MIN_VEHICLE_CROP_HEIGHT, MIN_VEHICLE_CROP_WIDTH,
     OCR_INTERVAL_FRAMES, OCR_VARIANT_BASE, OCR_VARIANT_ORDER, OCR_ZONE_START_RATIO,
@@ -72,6 +73,10 @@ class ALPRPipeline:
             candidate_min_conf=0.0 if self.record else None, stats=self.stats)
 
         self.debug_dir = None
+        self.export_dir = self.options.export_vehicle_dir
+        if self.export_dir:
+            os.makedirs(self.export_dir, exist_ok=True)
+        self.video_stem = "video"
         self.discard_dir = None
         if self.options.snapshots_dir:
             os.makedirs(self.options.snapshots_dir, exist_ok=True)
@@ -112,6 +117,7 @@ class ALPRPipeline:
             "records_format_invalid": 0,
             "records_rejected_invalid": 0,
             "records_duplicate": 0,
+            "vehicle_crops_exported": 0,   # recortes de vehículo escritos para el clasificador
             "export_audit_violations": 0,
         })
         self.stats.update(new_ocr_stats())
@@ -220,7 +226,7 @@ class ALPRPipeline:
     # --------------------------------------------------------------------------
     # Votos y finalización
     # --------------------------------------------------------------------------
-    def _cast_vote(self, track, text, conf, frame_idx, plate_crop, processed, bbox):
+    def _cast_vote(self, track, text, conf, frame_idx, plate_crop, processed, bbox, vehicle_crop=None):
         if self.record:
             # Se graba la lectura y NO se guardan imágenes (no hace falta y pesan).
             obs = self._observations.setdefault(int(track.track_id), {
@@ -229,7 +235,7 @@ class ALPRPipeline:
                                  "bbox": [int(x) for x in bbox]})
             track.add_vote(text, conf, frame_idx, None, None, bbox)
         else:
-            track.add_vote(text, conf, frame_idx, plate_crop, processed, bbox)
+            track.add_vote(text, conf, frame_idx, plate_crop, processed, bbox, vehicle_crop)
 
     def _try_finalize(self, v_track):
         """Finaliza si el consenso cumple los criterios. En modo grabación nunca
@@ -285,6 +291,7 @@ class ALPRPipeline:
         self.json_log.append(record)
         self._track_outcome[int(v_track.track_id)] = "registrada"
         self._append_jsonl(record)
+        self._export_vehicle_crop(v_track, best_plate)
         if reason == CONSENSUS_REASON:
             self.stats["records_consensus"] += 1
             tag = "NUEVO ALPR"
@@ -297,6 +304,23 @@ class ALPRPipeline:
                      f"{best_plate} (Conf: {avg_conf:.2f}, Votos: {count}, {reason}, "
                      f"format_valid={record['format_valid']})")
         return True
+
+    def _export_vehicle_crop(self, v_track, plate):
+        """Productor del contrato con alpr.classify: escribe el recorte del vehículo (el de la
+        MISMA lectura que respalda la patente) como vehiculo_<track_id>__<video>.jpg, de forma
+        atómica. Un fallo acá se registra pero nunca afecta la detección."""
+        if not self.export_dir:
+            return
+        ev = v_track.evidence.get(plate)
+        if ev is None or ev.vehicle_crop is None or ev.vehicle_crop.size == 0:
+            logging.warning(f"[export-vehiculo] ID #{v_track.track_id}: sin recorte de vehículo para exportar")
+            return
+        path = os.path.join(self.export_dir, vehicle_crop_filename(v_track.track_id, self.video_stem))
+        try:
+            write_image_atomic(path, ev.vehicle_crop)
+            self.stats["vehicle_crops_exported"] += 1
+        except Exception as e:
+            logging.warning(f"[export-vehiculo] ID #{v_track.track_id}: no se pudo escribir {path}: {e}")
 
     def _append_jsonl(self, record):
         """Persistencia incremental: si el proceso muere, no se pierde todo."""
@@ -472,7 +496,8 @@ class ALPRPipeline:
                                intentos=list(self.ocr.last_attempts))
             return
         text, conf, processed = result
-        self._cast_vote(job.track, text, float(conf), frame_idx, plate_crop, processed, job.bbox)
+        self._cast_vote(job.track, text, float(conf), frame_idx, plate_crop, processed, job.bbox,
+                        vehicle_crop=job.crop if self.export_dir else None)
         self._try_finalize(job.track)
 
     def _run_ocr_jobs(self, jobs, frame_idx):
@@ -554,6 +579,7 @@ class ALPRPipeline:
             raise FileNotFoundError(source)
         self._reset_state()
         self._init_video(source)
+        self.video_stem = sanitize_video_stem(os.path.splitext(os.path.basename(source))[0])
 
         if output_json:
             d = os.path.dirname(output_json)

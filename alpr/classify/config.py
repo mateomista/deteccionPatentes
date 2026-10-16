@@ -1,5 +1,4 @@
 """Configuración predeterminada del clasificador offline de vehículos."""
-import re
 from pathlib import Path
 
 INPUT_DIR = Path("outputs/crops_vehiculos")
@@ -17,11 +16,12 @@ SUPPORTED_EXTENSIONS = {
     ".webp",
 }
 
-# Patrón canónico de archivos de entrada: vehiculo_<track_id>.<ext>
-TRACK_PATTERN = re.compile(
-    r"^vehiculo_(\d+)$",
-    re.IGNORECASE
-)
+# Patrón de archivos de entrada, definido por el contrato con el productor (alpr/contracts.py):
+#   vehiculo_<track_id>.<ext>   (formato original)
+#   vehiculo_<track_id>__<video>.<ext>   (con el video, para no colisionar entre videos)
+from alpr.contracts import VEHICLE_CROP_PATTERN
+
+TRACK_PATTERN = VEHICLE_CROP_PATTERN
 
 CONFIDENCE_THRESHOLD = 0.0
 

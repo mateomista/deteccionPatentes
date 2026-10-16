@@ -273,3 +273,6 @@ class PipelineOptions:
     flush_unfinalized: bool = FLUSH_UNFINALIZED_DEFAULT
     cudnn_benchmark: bool = False
     log_discards: bool = True                    # registrar qué se descarta y por qué
+    # Carpeta donde exportar el recorte del vehículo de cada patente registrada (contrato con
+    # alpr.classify, ver alpr/contracts.py). None = no exportar (comportamiento original).
+    export_vehicle_dir: Optional[str] = None

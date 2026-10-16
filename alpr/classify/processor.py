@@ -12,7 +12,9 @@ from .config import (
     APPEND_RETRIES, CONFIDENCE_THRESHOLD, FAILED_DIR_NAME, FILE_STABILITY_TIMEOUT, MAX_RETRIES,
     PROCESSED_DIR_NAME, QUEUE_MAX_SIZE, RETRY_DELAY,
 )
-from .files import extract_track_id, file_sha256, is_candidate, wait_until_file_is_stable
+from .files import (
+    extract_track_id, extract_video, file_sha256, is_candidate, wait_until_file_is_stable,
+)
 from .results import ClassificationResult, JsonlWriter, utc_now
 
 logger = logging.getLogger("clasificador_offline")
@@ -129,6 +131,7 @@ class FileProcessor:
                     return
 
                 track_id = extract_track_id(path)
+                video = extract_video(path)
 
                 logger.info(
                     "Clasificando track_id=%d (intento %d/%d)",
@@ -159,6 +162,7 @@ class FileProcessor:
                     estado=status,
                     fingerprint_sha256=fingerprint,
                     timestamp_utc=utc_now(),
+                    video=video,
                 )
 
                 if self._persist(result):
@@ -203,8 +207,10 @@ class FileProcessor:
     def write_error(self, path: Path, error: Optional[Exception]):
         try:
             track_id = extract_track_id(path)
+            video = extract_video(path)
         except Exception:
             track_id = -1
+            video = None
 
         fingerprint = ""
         if path.exists():
@@ -234,6 +240,7 @@ class FileProcessor:
             estado=f"error: {error}",
             fingerprint_sha256=fingerprint,
             timestamp_utc=utc_now(),
+            video=video,
         )
 
         self._persist(result)
