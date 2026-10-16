@@ -53,11 +53,17 @@ class FakeReader:
         return [([[0, 0], [100, 0], [100, 30], [0, 30]], "AB123CD", 0.9)]
 
 
-def build(tmp_path, th=None, record=False, **opts):
+class BadReader:
+    """EasyOCR que solo lee basura que no es una patente."""
+    def readtext(self, image, **kw):
+        return [([[0, 0], [100, 0], [100, 30], [0, 30]], "XXXX", 0.8)]
+
+
+def build(tmp_path, th=None, record=False, reader=None, snapshots_dir=None, **opts):
     models = SimpleNamespace(device="cpu", vehicle_model=FakeVehicleModel(),
-                             vehicle_class_names={2: "car"}, ocr_reader=FakeReader(),
+                             vehicle_class_names={2: "car"}, ocr_reader=reader or FakeReader(),
                              plate_processor=None, plate_model=None)
-    options = PipelineOptions(snapshots_dir=None, strict_plate=True, dual_ocr=False,
+    options = PipelineOptions(snapshots_dir=snapshots_dir, strict_plate=True, dual_ocr=False,
                               **opts)
     pipe = ALPRPipeline(models, options, th or Thresholds(), record_observations=record)
     # RT-DETR simulado: una chapa apaisada (aspecto 4) dentro del recorte del vehículo.
@@ -130,3 +136,36 @@ def test_record_mode_never_finalizes_and_stores_no_images(tmp_path, video):
     assert res.detections == [] and res.observations["strict_plate"] is True
     votes = next(iter(res.observations["tracks"].values()))["votes"]
     assert len(votes) > 5 and all(set(v) == {"frame", "text", "conf", "bbox"} for v in votes)
+
+
+def test_discards_explain_why_a_vehicle_produced_no_plate(tmp_path, video):
+    snaps = tmp_path / "snaps"
+    pipe, _ = build(tmp_path, reader=BadReader(), snapshots_dir=str(snaps))
+    out = tmp_path / "out" / "r.json"
+    res = pipe.run_video(video, output_json=str(out))
+
+    assert res.detections == []
+    reasons = {d["motivo"] for d in res.discards}
+    assert "ocr_sin_lectura_valida" in reasons
+    assert "vehiculo_sin_lecturas_validas" in reasons        # explicación a nivel vehículo
+    ocr_d = next(d for d in res.discards if d["motivo"] == "ocr_sin_lectura_valida")
+    assert ocr_d["intentos"][0]["texto_leido"] == "XXXX"
+    assert ocr_d["intentos"][0]["resultado"] == "formato_invalido"
+    assert ocr_d["recorte"] and (tmp_path / "snaps" / "descartes").exists()
+    assert len(list((snaps / "descartes").glob("*.jpg"))) >= 1
+    # el archivo queda junto al JSON de detecciones
+    import json
+    saved = json.loads((tmp_path / "out" / "r_descartes.json").read_text(encoding="utf-8"))
+    assert len(saved) == len(res.discards)
+
+
+def test_successful_vehicle_has_no_track_level_discard(tmp_path, video):
+    pipe, _ = build(tmp_path)
+    res = pipe.run_video(video)
+    assert len(res.detections) == 1
+    assert not [d for d in res.discards if d["motivo"].startswith("vehiculo_")]
+
+
+def test_log_discards_can_be_disabled(tmp_path, video):
+    pipe, _ = build(tmp_path, reader=BadReader(), log_discards=False)
+    assert pipe.run_video(video).discards == []

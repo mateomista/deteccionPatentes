@@ -46,6 +46,7 @@ class RunResult:
     elapsed: float
     audit_problems: list = field(default_factory=list)
     observations: dict = None   # solo en modo record_observations
+    discards: list = field(default_factory=list)   # qué se descartó y por qué
 
 
 class ALPRPipeline:
@@ -71,11 +72,15 @@ class ALPRPipeline:
             candidate_min_conf=0.0 if self.record else None, stats=self.stats)
 
         self.debug_dir = None
+        self.discard_dir = None
         if self.options.snapshots_dir:
             os.makedirs(self.options.snapshots_dir, exist_ok=True)
             if self.options.debug_crops:
                 self.debug_dir = os.path.join(self.options.snapshots_dir, "debug")
                 os.makedirs(self.debug_dir, exist_ok=True)
+            if self.options.log_discards:
+                self.discard_dir = os.path.join(self.options.snapshots_dir, "descartes")
+                os.makedirs(self.discard_dir, exist_ok=True)
 
         self._reset_state()
 
@@ -88,6 +93,8 @@ class ALPRPipeline:
         self.recent_plates = {}
         self._jsonl_handle = None
         self._observations = {}
+        self.discards = []
+        self._track_outcome = {}   # track_id -> registrada | duplicada | rechazada
         self._rtdetr_batch_effective = self.rtdetr_batch_size
         self.stats.clear()
         self.stats.update({
@@ -260,16 +267,23 @@ class ALPRPipeline:
             snapshot_writer=self._snapshot_writer)
 
         if outcome == OUTCOME_DUPLICATE:
+            self._track_outcome[int(v_track.track_id)] = "duplicada"
+            self._note_discard(v_track.last_seen_frame, v_track.track_id, "patente_duplicada",
+                               patente=best_plate, detalle=detail)
             self.stats["records_duplicate"] += 1
             logging.info(f"[DUPLICADO] ID #{v_track.track_id} -> {best_plate} ({detail}, no se registra)")
             return False
         if outcome != OUTCOME_OK:
+            self._track_outcome[int(v_track.track_id)] = "rechazada"
+            self._note_discard(v_track.last_seen_frame, v_track.track_id, "registro_rechazado",
+                               patente=best_plate, detalle=detail)
             self.stats["records_rejected_invalid"] += 1
             logging.error(f"[export] ID #{v_track.track_id} NO se registra "
                           f"(patente={best_plate!r}): {detail}")
             return False
 
         self.json_log.append(record)
+        self._track_outcome[int(v_track.track_id)] = "registrada"
         self._append_jsonl(record)
         if reason == CONSENSUS_REASON:
             self.stats["records_consensus"] += 1
@@ -317,8 +331,43 @@ class ALPRPipeline:
         ]
         for tid in stale_ids:
             self._flush_track(self.tracks[tid], "track_lost")
+            self._log_track_discard(self.tracks[tid])
             self._note_track_end(self.tracks[tid])
             del self.tracks[tid]
+
+    # --------------------------------------------------------------------------
+    # Registro de descartes
+    # --------------------------------------------------------------------------
+    def _note_discard(self, frame_idx, track_id, reason, crop=None, **extra):
+        """Anota un descarte (y guarda el recorte si hay carpeta de snapshots)."""
+        if not self.options.log_discards:
+            return
+        rec = {"frame_idx": None if frame_idx is None else int(frame_idx),
+               "id_vehiculo": None if track_id is None else int(track_id), "motivo": reason}
+        rec.update(extra)
+        if crop is not None and self.discard_dir is not None and crop.size > 0:
+            name = f"F{int(frame_idx)}_ID{int(track_id)}_{reason.split(':')[0]}_{len(self.discards)}.jpg"
+            path = os.path.join(self.discard_dir, name)
+            rec["recorte"] = path if cv2.imwrite(path, crop) else None
+        self.discards.append(rec)
+
+    def _log_track_discard(self, v_track):
+        """Explica por qué un vehículo terminó SIN ninguna detección registrada."""
+        tid = int(v_track.track_id)
+        if self.record or not self.options.log_discards or tid in self._track_outcome:
+            return
+        self._track_outcome[tid] = "descartado"
+        if v_track.state == TrackState.NEW:
+            reason, extra = "vehiculo_nunca_cruzo_zona_ocr", {}
+        elif not v_track.votes:
+            reason, extra = "vehiculo_sin_lecturas_validas", {}
+        else:
+            reason = "vehiculo_sin_consenso_no_recuperable"
+            extra = {"lecturas": {p: {"votos": v_track.vote_counts[p],
+                                      "confianza_media": round(v_track.votes[p] / v_track.vote_counts[p], 3)}
+                                  for p in v_track.votes}}
+        self._note_discard(v_track.last_seen_frame, tid, reason,
+                           tipo_vehiculo=v_track.vehicle_class_name, **extra)
 
     def _note_track_end(self, v_track):
         if self.record and int(v_track.track_id) in self._observations:
@@ -389,7 +438,9 @@ class ALPRPipeline:
     def _consume_job(self, job, box_p, frame_idx):
         """Después del forward: clamp del box, recorte de chapa, focus mask de
         chapa, OCR adaptativo y UN voto como máximo ([OCR-ADAPT #4])."""
+        tid = job.track.track_id
         if box_p is None:
+            self._note_discard(frame_idx, tid, "rtdetr_sin_patente", tipo_vehiculo=job.vehicle_class)
             return
         vehicle_crop = job.crop
         ch, cw = vehicle_crop.shape[:2]
@@ -398,6 +449,7 @@ class ALPRPipeline:
         px2 = max(0, min(int(box_p[2]), cw))
         py2 = max(0, min(int(box_p[3]), ch))
         if px2 <= px1 or py2 <= py1:
+            self._note_discard(frame_idx, tid, "caja_de_patente_invalida", tipo_vehiculo=job.vehicle_class)
             return
 
         plate_crop = vehicle_crop[py1:py2, px1:px2]
@@ -408,11 +460,16 @@ class ALPRPipeline:
             if not ok:
                 self.stats["plate_crops_skipped"] += 1
                 self.stats["focus_mask_rejections"][reason] += 1
+                self._note_discard(frame_idx, tid, "focus_mask", crop=plate_crop,
+                                   detalle=reason, tipo_vehiculo=job.vehicle_class)
                 return
 
         self.stats["plate_crops_to_ocr"] += 1
         result = self.ocr.read(plate_crop, job.vehicle_class)
         if result is None:
+            self._note_discard(frame_idx, tid, "ocr_sin_lectura_valida", crop=plate_crop,
+                               tipo_vehiculo=job.vehicle_class,
+                               intentos=list(self.ocr.last_attempts))
             return
         text, conf, processed = result
         self._cast_vote(job.track, text, float(conf), frame_idx, plate_crop, processed, job.bbox)
@@ -513,6 +570,7 @@ class ALPRPipeline:
             frames, elapsed = self._process_frames(source, output_video)
             self._flush_all_tracks("end_of_video")
             for v_track in self.tracks.values():
+                self._log_track_discard(v_track)
                 self._note_track_end(v_track)
         finally:
             if self._jsonl_handle is not None:
@@ -529,6 +587,12 @@ class ALPRPipeline:
 
         stats = dict(self.stats)   # snapshot: el próximo run_video reinicia self.stats
         self._log_stats(frames, elapsed)
+        self._log_discards()
+        if output_json and self.options.log_discards:
+            path = os.path.splitext(output_json)[0] + "_descartes.json"
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(self.discards, f, ensure_ascii=False, indent=2)
+            logging.info(f"[salida] {len(self.discards)} descartes -> {path}")
 
         observations = None
         if self.record:
@@ -546,7 +610,29 @@ class ALPRPipeline:
             }
         return RunResult(source=source, detections=list(self.json_log), stats=stats,
                          frames=frames, fps=float(self.video_info.fps), elapsed=elapsed,
-                         audit_problems=problems, observations=observations)
+                         audit_problems=problems, observations=observations,
+                         discards=list(self.discards))
+
+    def _log_discards(self):
+        """Resumen legible de los descartes: por motivo y, por vehículo, por qué no
+        salió ninguna patente."""
+        if not self.options.log_discards or not self.discards:
+            return
+        by_reason = defaultdict(int)
+        for d in self.discards:
+            by_reason[d["motivo"]] += 1
+        logging.info("[DESCARTES] Por motivo: %s", ", ".join(
+            f"{k}={v}" for k, v in sorted(by_reason.items(), key=lambda kv: -kv[1])))
+        for d in self.discards:
+            if d["motivo"].startswith("vehiculo_"):
+                extra = f" lecturas={d['lecturas']}" if "lecturas" in d else ""
+                logging.info("[DESCARTES] ID #%s (%s) sin patente registrada: %s%s",
+                             d["id_vehiculo"], d.get("tipo_vehiculo"), d["motivo"], extra)
+        reads = [(d, a) for d in self.discards if d["motivo"] == "ocr_sin_lectura_valida"
+                 for a in d["intentos"] if a["texto_leido"]]
+        if reads:
+            logging.info("[DESCARTES] Textos leídos y descartados (formato/confianza): %s", ", ".join(
+                sorted({f"{a['texto_leido']}->{a['texto_corregido']}" for _, a in reads})))
 
     # --------------------------------------------------------------------------
     # Métricas

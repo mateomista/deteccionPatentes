@@ -272,3 +272,4 @@ class PipelineOptions:
     strict_plate: bool = STRICT_PLATE_VALIDATION
     flush_unfinalized: bool = FLUSH_UNFINALIZED_DEFAULT
     cudnn_benchmark: bool = False
+    log_discards: bool = True                    # registrar qué se descarta y por qué

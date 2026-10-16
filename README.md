@@ -93,6 +93,23 @@ python -m alpr.inference --source inputs/trafico.mp4 --strict-plate \
     --thresholds outputs/calibration/best_thresholds.json
 ```
 
+## Qué descarta el pipeline (y por qué)
+
+Cada corrida con `--output-json X.json` escribe además `X_descartes.json`, y los recortes descartados
+quedan en `snapshots/descartes/` (si hay `--snapshots-dir`). Motivos:
+
+| `motivo` | Qué pasó |
+|---|---|
+| `rtdetr_sin_patente` / `caja_de_patente_invalida` | RT-DETR no encontró patente en el vehículo |
+| `focus_mask` | Se encontró una caja pero se descartó por tamaño, aspecto o contraste (`detalle`) |
+| `ocr_sin_lectura_valida` | Los intentos de OCR no dieron una lectura válida; `intentos` muestra qué leyó cada variante (`texto_leido`, `texto_corregido`, `confianza`, `resultado`) |
+| `vehiculo_nunca_cruzo_zona_ocr` | El vehículo nunca llegó a la zona de lectura |
+| `vehiculo_sin_lecturas_validas` | Entró a la zona pero ninguna lectura fue válida |
+| `vehiculo_sin_consenso_no_recuperable` | Hubo lecturas pero no alcanzaron para consenso ni para recuperación (`lecturas` las detalla) |
+| `patente_duplicada` / `registro_rechazado` | Se descartó por deduplicación o por evidencia inconsistente |
+
+El log final resume los motivos y explica vehículo por vehículo por qué no salió patente.
+
 ## Por qué la calibración es rápida
 
 Los umbrales son de dos clases:

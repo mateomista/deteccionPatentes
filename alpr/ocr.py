@@ -54,6 +54,9 @@ class PlateOCR:
         self.stats = stats if stats is not None else new_ocr_stats()
         for k, v in new_ocr_stats().items():
             self.stats.setdefault(k, v)
+        # Intentos del ÚLTIMO read(): qué leyó cada variante y por qué se aceptó o
+        # descartó. Sirve para explicar los descartes (ver pipeline.discards).
+        self.last_attempts = []
 
     def _ocr_pass(self, image):
         if image is None or image.size == 0:
@@ -67,9 +70,15 @@ class PlateOCR:
             return None
         return select_ocr_result(results)
 
+    def _note(self, variant, raw, corrected, conf, outcome):
+        self.last_attempts.append({
+            "variant": variant, "texto_leido": raw, "texto_corregido": corrected,
+            "confianza": None if conf is None else round(float(conf), 3), "resultado": outcome})
+
     def _attempt(self, variant, image, vehicle_class):
         """UN intento. Devuelve un dict candidato (formato Y confianza válidos) o None."""
         if image is None or image.size == 0:
+            self._note(variant, None, None, None, "sin_imagen")
             return None
         s = self.stats
         s["ocr_attempts_total"] += 1
@@ -78,6 +87,7 @@ class PlateOCR:
         best = self._ocr_pass(image)
         if best is None:
             s["ocr_no_text"] += 1
+            self._note(variant, None, None, None, "sin_texto")
             return None
 
         raw_text, conf = best[1], float(best[2])
@@ -85,12 +95,15 @@ class PlateOCR:
 
         if not is_valid_plate(text, self.strict):
             s["ocr_rejected_format"] += 1
+            self._note(variant, raw_text, text, conf, "formato_invalido")
             return None
         if conf < self.candidate_min_conf:
             s["ocr_rejected_confidence"] += 1
+            self._note(variant, raw_text, text, conf, "confianza_baja")
             return None
 
         s["ocr_valid_readings"] += 1
+        self._note(variant, raw_text, text, conf, "valida")
         return {"text": text, "conf": conf, "variant": variant,
                 "processed": image, "official": matches_official_format(text)}
 
@@ -99,6 +112,7 @@ class PlateOCR:
         final, o None si ningún intento fue válido."""
         s = self.stats
         s["ocr_crops_processed"] += 1
+        self.last_attempts = []
 
         warped = prewarp_plate(plate_crop)   # base geométrica común
         candidates = []
