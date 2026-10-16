@@ -1,0 +1,293 @@
+--- legacy/pipeclasificadorVehiculos.py
++++ standalone/pipeclasificadorVehiculos.py
+@@ -2,6 +2,10 @@
+ """
+ Clasificador offline de vehículos (Consumidor Desacoplado).
+ 
++[VERSIÓN CON MEJORAS] Copia de legacy/pipeclasificadorVehiculos.py con las correcciones del reporte
++de avance del 15/10/2026 (ver standalone/README.md y standalone/pipeclasificadorVehiculos.patch).
++El original sigue intacto en legacy/. Equivale a alpr/classify/ pero en un solo archivo.
++
+ Arquitectura Productor - Consumidor:
+ 
+ pipelineV5.py (Productor - Fase 4 futura)
+@@ -48,6 +52,7 @@
+ import sys
+ import threading
+ import time
++import unicodedata
+ from dataclasses import asdict, dataclass
+ from datetime import datetime, timezone
+ from pathlib import Path
+@@ -55,6 +60,7 @@
+ from typing import Optional, Tuple, Set
+ 
+ import cv2
++import numpy as np
+ 
+ # Importación segura de PyTorch
+ try:
+@@ -92,9 +98,12 @@
+     ".webp",
+ }
+ 
+-# Patrón canónico de archivos de entrada: vehiculo_<track_id>.<ext>
++# Patrón de archivos de entrada (contrato con el productor):
++#   vehiculo_<track_id>.<ext>            (formato original)
++#   vehiculo_<track_id>__<video>.<ext>   (con el video: el track_id se reinicia por video y
++#                                         sin él dos videos distintos colisionarían)
+ TRACK_PATTERN = re.compile(
+-    r"^vehiculo_(\d+)$",
++    r"^vehiculo_(\d+)(?:__([A-Za-z0-9._-]+))?$",
+     re.IGNORECASE
+ )
+ 
+@@ -110,6 +119,9 @@
+ 
+ QUEUE_MAX_SIZE = 1000
+ 
++# Reintentos de la escritura en el JSONL una vez que el archivo ya fue movido.
++APPEND_RETRIES = 3
++
+ 
+ # ============================================================
+ # LOGGING
+@@ -145,6 +157,8 @@
+     estado: str
+     fingerprint_sha256: str
+     timestamp_utc: str
++    # Video de origen (viaja en el nombre del recorte); None con el nombre antiguo.
++    video: Optional[str] = None
+ 
+     def to_json(self) -> str:
+         return json.dumps(
+@@ -265,6 +279,16 @@
+ }
+ 
+ 
++def _fold(text: str) -> str:
++    """Minúsculas y sin tildes/diéresis, para comparar con el catálogo ('Citroën' == 'citroen')."""
++    decomposed = unicodedata.normalize("NFKD", text)
++    return "".join(ch for ch in decomposed if not unicodedata.combining(ch)).lower()
++
++
++def _canon_key(brand: str) -> str:
++    return _fold(brand).replace("-", "_").replace(" ", "_")
++
++
+ def parse_brand_model(label: str) -> tuple[Optional[str], Optional[str]]:
+     """
+     Interpreta y descompone etiquetas de clasificación en tuplas (marca, modelo).
+@@ -288,7 +312,8 @@
+     if not label or not isinstance(label, str):
+         return None, None
+ 
+-    raw = label.strip()
++    # NFC: cada letra con tilde es UN carácter, así el largo coincide con la versión sin tildes.
++    raw = unicodedata.normalize("NFC", label.strip())
+     if not raw:
+         return None, None
+ 
+@@ -299,13 +324,12 @@
+             b = parts[0].strip() or None
+             m = parts[1].strip() or None
+             if b:
+-                canon_key = b.lower().replace("-", "_").replace(" ", "_")
+-                b_canon = CANONICAL_BRAND_NAMES.get(canon_key, b)
++                b_canon = CANONICAL_BRAND_NAMES.get(_canon_key(b), b)
+             else:
+                 b_canon = None
+             return b_canon, m
+ 
+-    raw_lower = raw.lower()
++    raw_lower = _fold(raw)
+ 
+     # 2. Búsqueda contra catálogo canónico (marcas compuestas primero)
+     for brand_key in KNOWN_BRANDS:
+@@ -316,6 +340,12 @@
+                 model_part = raw[len(prefix):].strip()
+                 return brand_canonical, (model_part or None)
+ 
++    # 2b. La etiqueta ES una marca del catálogo (clasificador por marca): sin modelo.
++    #     Debe ir antes del fallback, que partiría 'Mercedes-Benz' en ('Mercedes', 'Benz').
++    bare = CANONICAL_BRAND_NAMES.get(_canon_key(raw))
++    if bare is not None:
++        return bare, None
++
+     # 3. Fallback: exactamente un separador ('_' o '-')
+     for delimiter in ("_", "-"):
+         if raw.count(delimiter) == 1:
+@@ -323,8 +353,7 @@
+             b = b.strip() or None
+             m = m.strip() or None
+             if b:
+-                canon_key = b.lower().replace("-", "_").replace(" ", "_")
+-                b_canon = CANONICAL_BRAND_NAMES.get(canon_key, b)
++                b_canon = CANONICAL_BRAND_NAMES.get(_canon_key(b), b)
+             else:
+                 b_canon = None
+             return b_canon, m
+@@ -352,6 +381,12 @@
+     return int(match.group(1))
+ 
+ 
++def extract_video(path: Path):
++    """Nombre del video si el archivo es vehiculo_<track_id>__<video>.<ext>; None si es el formato antiguo."""
++    match = TRACK_PATTERN.match(path.stem)
++    return match.group(2) if match else None
++
++
+ def is_candidate(path: Path, input_dir: Path) -> bool:
+     """
+     Verifica si el archivo es un candidato legítimo para procesamiento:
+@@ -443,7 +478,9 @@
+ 
+         if stable_checks >= required_stable_checks:
+             try:
+-                image = cv2.imread(str(path), cv2.IMREAD_COLOR)
++                # np.fromfile + imdecode en vez de cv2.imread: imread falla en Windows con rutas
++                # que tienen tildes o ñ (p. ej. carpetas como 'Exportación').
++                image = cv2.imdecode(np.fromfile(str(path), dtype=np.uint8), cv2.IMREAD_COLOR)
+                 if (
+                     image is not None
+                     and image.size > 0
+@@ -470,15 +507,36 @@
+         self.lock = threading.Lock()
+         self.path.parent.mkdir(parents=True, exist_ok=True)
+ 
++    def _ensure_trailing_newline(self) -> None:
++        """Si una escritura anterior quedó cortada (sin '\\n' final), el próximo registro se
++        pegaría a esa línea y se perderían los dos. Se cierra la línea parcial antes de anexar."""
++        try:
++            if not self.path.exists() or self.path.stat().st_size == 0:
++                return
++            with self.path.open("rb") as file:
++                file.seek(-1, os.SEEK_END)
++                last = file.read(1)
++            if last != b"\n":
++                with self.path.open("ab") as file:
++                    file.write(b"\n")
++                    file.flush()
++                    os.fsync(file.fileno())
++        except OSError as exc:
++            logger.error("No se pudo verificar el final de %s: %s", self.path, exc)
++
+     def append(self, result: ClassificationResult) -> None:
+         line = result.to_json() + "\n"
+         with self.lock:
++            self._ensure_trailing_newline()
+             with self.path.open("a", encoding="utf-8") as file:
+                 file.write(line)
+                 file.flush()
+                 os.fsync(file.fileno())
+ 
+-    def load_processed_hashes(self) -> set[str]:
++    def load_processed_hashes(self, include_mock: bool = True) -> set[str]:
++        """Huellas ya procesadas. `include_mock=False` ignora las lecturas simuladas, para que un
++        recorte probado con --mock no cuente como 'ya clasificado' ante el modelo real."""
++        accepted = {"ok", "below_threshold"} | ({"mock"} if include_mock else set())
+         processed = set()
+         if not self.path.exists():
+             return processed
+@@ -497,7 +555,7 @@
+                     fingerprint = row.get("fingerprint_sha256")
+                     status = row.get("estado")
+ 
+-                    if fingerprint and status in {"ok", "below_threshold", "mock"}:
++                    if fingerprint and status in accepted:
+                         processed.add(fingerprint)
+         except OSError as exc:
+             logger.error("No se pudo leer %s: %s", self.path, exc)
+@@ -661,7 +719,8 @@
+         self.pending: Set[Path] = set()
+         self.pending_lock = threading.Lock()
+ 
+-        self.processed_hashes = writer.load_processed_hashes()
++        # Un clasificador real no debe dar por procesado lo que solo pasó por --mock.
++        self.processed_hashes = writer.load_processed_hashes(include_mock=bool(classifier.mock))
+         self.processed_lock = threading.Lock()
+ 
+         self.worker = threading.Thread(
+@@ -725,6 +784,11 @@
+                     return
+ 
+                 stable = wait_until_file_is_stable(path, self.stop_event)
++                if not stable and self.stop_event.is_set():
++                    # Cierre solicitado: no es un fallo del archivo. Se deja en la carpeta de
++                    # entrada para que lo procese el próximo arranque (antes iba a 'fallidos').
++                    logger.info("Cierre solicitado: %s queda pendiente, sin procesar.", path.name)
++                    return
+                 if not stable:
+                     raise TimeoutError(
+                         f"El archivo {path.name} no alcanzó un estado legible y estable tras {FILE_STABILITY_TIMEOUT}s."
+@@ -742,6 +806,7 @@
+                     return
+ 
+                 track_id = extract_track_id(path)
++                video = extract_video(path)
+ 
+                 logger.info(
+                     "Clasificando track_id=%d (intento %d/%d)",
+@@ -772,12 +837,12 @@
+                     estado=status,
+                     fingerprint_sha256=fingerprint,
+                     timestamp_utc=utc_now(),
++                    video=video,
+                 )
+ 
+-                self.writer.append(result)
+-
+-                with self.processed_lock:
+-                    self.processed_hashes.add(fingerprint)
++                if self._persist(result):
++                    with self.processed_lock:
++                        self.processed_hashes.add(fingerprint)
+ 
+                 logger.info(
+                     "Clasificación terminada: track=%d | %s | %.3f -> %s",
+@@ -797,11 +862,30 @@
+         # Si se agotaron todos los reintentos: registrar fallo transaccional
+         self.write_error(path, last_exc)
+ 
++    def _persist(self, result: ClassificationResult) -> bool:
++        """Anexa el registro al JSONL con reintentos. El archivo ya fue movido, así que un fallo
++        aquí no puede reintentar la clasificación (el recorte ya no está): si no se logra
++        persistir, el registro completo queda en el log para recuperarlo a mano."""
++        last_exc: Optional[Exception] = None
++        for attempt in range(1, APPEND_RETRIES + 1):
++            try:
++                self.writer.append(result)
++                return True
++            except Exception as exc:
++                last_exc = exc
++                logger.error("No se pudo escribir el JSONL (intento %d/%d): %s",
++                             attempt, APPEND_RETRIES, exc)
++                self.stop_event.wait(self.retry_delay)
++        logger.error("REGISTRO NO PERSISTIDO (%s). Recuperar manualmente: %s", last_exc, result.to_json())
++        return False
++
+     def write_error(self, path: Path, error: Optional[Exception]):
+         try:
+             track_id = extract_track_id(path)
++            video = extract_video(path)
+         except Exception:
+             track_id = -1
++            video = None
+ 
+         fingerprint = ""
+         if path.exists():
+@@ -831,12 +915,10 @@
+             estado=f"error: {error}",
+             fingerprint_sha256=fingerprint,
+             timestamp_utc=utc_now(),
++            video=video,
+         )
+ 
+-        try:
+-            self.writer.append(result)
+-        except Exception:
+-            logger.exception("No se pudo registrar el error en JSONL.")
++        self._persist(result)
+ 
+     @staticmethod
+     def move_file(

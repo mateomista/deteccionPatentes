@@ -1,0 +1,201 @@
+--- legacy/pipelineV5.py
++++ standalone/pipelineV5.py
+@@ -1,4 +1,8 @@
+ """
++[VERSIÓN CON MEJORAS] Copia de legacy/pipelineV5.py con la exportación de recortes de vehículo
++para el clasificador (opción --export-vehicle-crops, apagada por defecto). Sin esa opción se
++comporta igual que el original. Ver standalone/README.md y standalone/pipelineV5.patch.
++
+ Proyecto ALPR/LPR UTN-GIBD & Jefatura Departamental de Policía
+ Script: PIPELINE UNIFICADO EN TIEMPO REAL - v3
+ Hardware objetivo: NVIDIA GeForce RTX 3080
+@@ -495,6 +499,7 @@
+         self.processed = None       # [MEJORA-v3 #11] lo que vio el OCR
+         self.frame = -1
+         self.bbox = None
++        self.vehicle_crop = None    # recorte del VEHÍCULO completo (solo si se exporta)
+ 
+ 
+ class VehicleTrack:
+@@ -512,7 +517,8 @@
+ 
+         self.best_plate_text = None
+ 
+-    def add_vote(self, text, confidence, frame_idx, plate_crop, processed_crop, vehicle_bbox):
++    def add_vote(self, text, confidence, frame_idx, plate_crop, processed_crop, vehicle_bbox,
++                 vehicle_crop=None):
+         self.votes[text] = self.votes.get(text, 0.0) + float(confidence)
+         self.vote_counts[text] = self.vote_counts.get(text, 0) + 1
+ 
+@@ -524,6 +530,7 @@
+             ev.processed = processed_crop.copy() if processed_crop is not None else None
+             ev.frame = frame_idx
+             ev.bbox = vehicle_bbox.copy() if vehicle_bbox is not None else None
++            ev.vehicle_crop = vehicle_crop.copy() if vehicle_crop is not None else None
+ 
+     def get_consensus_plate(self):
+         """Patente ganadora por sumatoria total de confianza."""
+@@ -1118,6 +1125,60 @@
+ # ==============================================================================
+ # PIPELINE MODULAR
+ # ==============================================================================
++# ==============================================================================
++# CONTRATO PRODUCTOR-CONSUMIDOR (misma lógica que alpr/contracts.py)
++# ==============================================================================
++# El pipeline escribe, por cada vehículo cuya patente quedó registrada, UN recorte del vehículo
++# completo como vehiculo_<track_id>__<video>.jpg, de forma atómica (.tmp -> renombrar). El video va en
++# el nombre porque el track_id de ByteTrack se reinicia en cada video.
++_UNSAFE_NAME_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
++
++
++def sanitize_video_stem(stem):
++    """Deja solo caracteres seguros para un nombre de archivo (también en Windows)."""
++    return _UNSAFE_NAME_CHARS.sub("-", str(stem)).strip("-._") or "video"
++
++
++def vehicle_crop_filename(track_id, video_stem=None, ext=".jpg"):
++    if int(track_id) < 0:
++        raise ValueError(f"track_id inválido: {track_id}")
++    name = f"vehiculo_{int(track_id)}"
++    if video_stem:
++        name += f"__{sanitize_video_stem(video_stem)}"
++    return name + ext
++
++
++def write_image_atomic(path, image, jpeg_quality=95, retries=3, delay=0.1):
++    """Escribe `image` de forma atómica (a <path>.tmp y luego os.replace). Codifica con imencode:
++    funciona con rutas con tildes en Windows, donde cv2.imwrite falla. Reintenta ante bloqueos."""
++    parent = os.path.dirname(path)
++    if parent:
++        os.makedirs(parent, exist_ok=True)
++    ext = os.path.splitext(path)[1].lower() or ".jpg"
++    params = [int(cv2.IMWRITE_JPEG_QUALITY), int(jpeg_quality)] if ext in (".jpg", ".jpeg") else []
++    ok, buf = cv2.imencode(ext, image, params)
++    if not ok:
++        raise ValueError(f"No se pudo codificar la imagen como {ext}")
++    tmp = path + ".tmp"
++    last_exc = None
++    for attempt in range(1, retries + 1):
++        try:
++            with open(tmp, "wb") as f:
++                f.write(buf.tobytes())
++                f.flush()
++                os.fsync(f.fileno())
++            os.replace(tmp, path)
++            return path
++        except OSError as exc:
++            last_exc = exc
++            time.sleep(delay * attempt)
++    try:
++        os.remove(tmp)
++    except OSError:
++        pass
++    raise OSError(f"No se pudo escribir {path} tras {retries} intentos: {last_exc}")
++
++
+ class OcrJob:
+     """[BATCH-#1] Candidato a detección de patente, producido en FASE A.
+ 
+@@ -1181,6 +1242,7 @@
+             "records_recovered": 0,       # [POLICY] registradas con track_lost/end_of_video
+             "records_format_invalid": 0,  # [POLICY] registradas con format_valid=False
+             "records_rejected_invalid": 0,  # [EXPORT #2] evidencia/patente inconsistente
++            "vehicle_crops_exported": 0,    # recortes de vehículo escritos para el clasificador
+             "export_audit_violations": 0,   # [EXPORT #5]
+         })
+ 
+@@ -1188,6 +1250,11 @@
+         self.strict_plate = bool(getattr(args, "strict_plate", STRICT_PLATE_VALIDATION))
+         self.flush_unfinalized = bool(getattr(args, "flush_unfinalized", FLUSH_UNFINALIZED_DEFAULT))
+ 
++        # Exportación de recortes de vehículo para el clasificador (apagada por defecto).
++        self.export_vehicle_dir = getattr(args, "export_vehicle_crops", None)
++        self.video_stem = sanitize_video_stem(
++            os.path.splitext(os.path.basename(getattr(args, "source", "") or ""))[0])
++
+         # [OCR-ADAPT #5] Presupuesto de intentos: 1 base + hasta 3 variantes.
+         # --no-dual-ocr deja solo el intento base.
+         max_total = 1 + len(OCR_VARIANT_ORDER)
+@@ -1236,6 +1303,8 @@
+             raise FileNotFoundError(self.args.plate_model)
+ 
+         os.makedirs(self.args.snapshots_dir, exist_ok=True)
++        if self.export_vehicle_dir:
++            os.makedirs(self.export_vehicle_dir, exist_ok=True)
+         if self.args.debug_crops:
+             self.debug_dir = os.path.join(self.args.snapshots_dir, "debug")
+             os.makedirs(self.debug_dir, exist_ok=True)
+@@ -1676,6 +1745,7 @@
+         }
+         self.json_log.append(record)
+         self._append_jsonl(record)
++        self._export_vehicle_crop(v_track, best_plate)
+ 
+         # [POLICY] El log y los contadores separan consenso de recuperada.
+         if reason == CONSENSUS_REASON:
+@@ -1691,6 +1761,24 @@
+                      f"format_valid={record['format_valid']})")
+         return True
+ 
++    def _export_vehicle_crop(self, v_track, plate):
++        """Productor del contrato con el clasificador: escribe el recorte del vehículo (el de la
++        MISMA lectura que respalda la patente) como vehiculo_<track_id>__<video>.jpg, de forma
++        atómica. Un fallo acá se registra pero nunca afecta la detección."""
++        if not self.export_vehicle_dir:
++            return
++        ev = v_track.evidence.get(plate)
++        if ev is None or ev.vehicle_crop is None or ev.vehicle_crop.size == 0:
++            logging.warning(f"[export-vehiculo] ID #{v_track.track_id}: sin recorte de vehículo para exportar")
++            return
++        path = os.path.join(self.export_vehicle_dir,
++                            vehicle_crop_filename(v_track.track_id, self.video_stem))
++        try:
++            write_image_atomic(path, ev.vehicle_crop)
++            self.stats["vehicle_crops_exported"] += 1
++        except Exception as e:
++            logging.warning(f"[export-vehiculo] ID #{v_track.track_id}: no se pudo escribir {path}: {e}")
++
+     def _append_jsonl(self, record):
+         """Persistencia incremental: si el proceso muere, no se pierde todo."""
+         if self._jsonl_handle is None:
+@@ -1936,6 +2024,9 @@
+                      "ESTRICTA" if self.strict_plate else "PERMISIVA/DEBUG (no equivale a formato argentino)")
+         logging.info("[MÉTRICAS][POLÍTICA] Umbrales SIN CALIBRAR usados en esta corrida: %s",
+                      self._threshold_values())
++        if self.export_vehicle_dir:
++            logging.info("[MÉTRICAS][EXPORT] Recortes de vehículo exportados: %d -> %s",
++                         s["vehicle_crops_exported"], self.export_vehicle_dir)
+         if s["rtdetr_forwards"]:
+             logging.info(
+                 "[MÉTRICAS][BATCH] Forwards RT-DETR: %d | crops en lote: %d | "
+@@ -2145,7 +2236,8 @@
+         # PlateEvidence queda sincronizada con el candidato elegido: plate_crop
+         # natural + la imagen procesada del intento ganador + frame y bbox.
+         job.track.add_vote(text, float(conf), frame_idx,
+-                           plate_crop, processed, job.bbox)
++                           plate_crop, processed, job.bbox,
++                           vehicle_crop=job.crop if self.export_vehicle_dir else None)
+         self._try_finalize(job.track)
+ 
+     def _run_ocr_jobs(self, jobs, frame_idx):
+@@ -2168,7 +2260,8 @@
+                     job.crop, job.vehicle_class)
+                 if texto:
+                     job.track.add_vote(texto, conf, frame_idx,
+-                                       plate_crop, processed, job.bbox)
++                                       plate_crop, processed, job.bbox,
++                                       vehicle_crop=job.crop if self.export_vehicle_dir else None)
+                     self._try_finalize(job.track)
+             return
+ 
+@@ -2215,6 +2308,10 @@
+                    default=FLUSH_UNFINALIZED_DEFAULT,
+                    help="Registra (marcadas en 'finalization') las patentes de tracks "
+                         "que se pierden o terminan el video sin alcanzar consenso")
++    p.add_argument("--export-vehicle-crops", default=None, metavar="DIR",
++                   help="Exporta el recorte del vehículo de cada patente registrada como "
++                        "vehiculo_<track_id>__<video>.jpg (contrato con el clasificador). "
++                        "Por defecto no exporta")
+     p.add_argument("--cudnn-benchmark", action="store_true",
+                    help="Activa torch.backends.cudnn.benchmark (compará A/B: con EasyOCR "
+                         "las shapes varían y puede empeorar)")

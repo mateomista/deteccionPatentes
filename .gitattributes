@@ -1,0 +1,5 @@
+# legacy/ y standalone/ guardan archivos con hash registrado (SHA256SUMS.txt): Git no debe
+# convertirles los finales de línea (en Windows, core.autocrlf los cambiaría y el hash dejaría
+# de coincidir). pipelineV5.py original usa CRLF; el resto, LF.
+legacy/*      -text
+standalone/*  -text

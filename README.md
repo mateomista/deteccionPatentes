@@ -44,8 +44,9 @@ alpr/
   data/             ccpd.py (CCPD→COCO) · splits.py (particiones sin fuga)
   train/            train_rtdetr.py
   calibrate/        calibrate.py  (record → sweep)
+  contracts.py      contrato productor-consumidor (nombres de archivo, escritura atómica)
   classify/         clasificador offline de vehículos (marca/modelo), consumidor desacoplado
-  tools/            cut_video.py (cortar un tramo sin ffmpeg) · compare_runs.py (V5 vs modular)
+  tools/            cut_video.py · compare_runs.py (V5 vs modular) · join_results.py (patente + clasificación)
   evaluate/         e2e.py · ocr_eval.py · detector_eval.py · metrics.py · detection_metrics.py
 legacy/            pipelineV5.py original, para comparar salidas contra el refactor
 tests/              56 tests: lógica pura + pipeline real con modelos simulados
@@ -121,6 +122,33 @@ python -m pytest tests/classify -q
 `watchdog` y `ultralytics` son opcionales y NO se instalan con `requirements.txt`
 (ver `requirements-classifier.txt`; instalar solo con autorización del equipo).
 
+### Contrato con el pipeline (productor)
+
+El pipeline puede exportar el recorte del vehículo de cada patente registrada, listo para el clasificador:
+
+```bash
+python -m alpr.inference --source clip.mp4 --strict-plate --export-vehicle-crops outputs/crops_vehiculos
+python -m alpr.classify --mock --single-run --device cpu
+python -m alpr.tools.join_results --detections detecciones_alpr.json --classifications outputs/clasificaciones_vehiculos.jsonl --video clip
+```
+
+- **Nombre:** `vehiculo_<track_id>__<video>.jpg`. El video va en el nombre porque el `track_id` de ByteTrack se
+  reinicia en cada video (sin él, `vehiculo_1.jpg` de dos videos colisionaría). El formato original
+  `vehiculo_<track_id>.jpg` sigue aceptándose.
+- **Escritura atómica** (`.tmp` y renombrar): el consumidor nunca ve un archivo a medio escribir.
+- **Apagado por defecto:** sin `--export-vehicle-crops` el pipeline se comporta como antes; con la opción, las
+  detecciones son las mismas (lo verifican las pruebas).
+- **Qué se exporta:** un recorte por patente registrada, el de la lectura que la respalda. Los vehículos sin patente
+  leída no se exportan todavía.
+- **Memoria:** con la opción encendida, cada patente candidata conserva una copia del recorte del vehículo hasta
+  que el track termina.
+- **GPU:** el productor y el consumidor son procesos separados que se comunican por una carpeta: el clasificador no
+  puede frenar al pipeline y se puede correr en CPU (`--device cpu`). Cuánto cuesta clasificar en GPU junto al
+  pipeline hay que medirlo cuando exista el modelo.
+
+Para quien prefiera seguir con los dos scripts sueltos, las mismas mejoras están en `standalone/`
+(ver `standalone/README.md`).
+
 ### Qué cambió respecto del original
 
 La reorganización conserva el código: cada clase y función es idéntica salvo `main`, que ahora
@@ -139,10 +167,8 @@ con una prueba que **fallaba sobre el código original** (`tests/classify/`):
 
 ### Limitaciones conocidas (no se tocaron)
 
-- **El productor no existe todavía.** Ni `legacy/pipelineV5.py` ni `alpr/pipeline.py` guardan los
-  recortes completos de vehículos que este consumidor espera.
-- **El `track_id` es solo por video.** ByteTrack reinicia los IDs en cada video: `vehiculo_1.jpg` de dos
-  videos distintos colisionaría. El contrato de archivos debería incluir el nombre del video.
+- **Sin patente leída no hay recorte.** El productor exporta un recorte por patente registrada; los vehículos
+  cuya patente no se leyó no se clasifican todavía.
 - **Sin modelo ni dataset.** No hay `weights/vehicle_classifier.pt`; solo funciona `--mock`.
 - **Modo watchdog sin reescaneo.** Si la cola (1000) se llena, un archivo no encolado se recupera
   recién en el próximo arranque; el sondeo periódico sí lo recupera.
