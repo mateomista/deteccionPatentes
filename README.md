@@ -44,7 +44,7 @@ alpr/
   data/             ccpd.py (CCPD→COCO) · splits.py (particiones sin fuga)
   train/            train_rtdetr.py
   calibrate/        calibrate.py  (record → sweep)
-  tools/            cut_video.py (cortar un tramo de un video sin ffmpeg)
+  tools/            cut_video.py (cortar un tramo sin ffmpeg) · compare_runs.py (V5 vs modular)
   evaluate/         e2e.py · ocr_eval.py · detector_eval.py · metrics.py · detection_metrics.py
 legacy/            pipelineV5.py original, para comparar salidas contra el refactor
 tests/              56 tests: lógica pura + pipeline real con modelos simulados
@@ -92,6 +92,20 @@ python -m alpr.evaluate.e2e --split test --strict-plate --default-thresholds --o
 python -m alpr.inference --source inputs/trafico.mp4 --strict-plate \
     --thresholds outputs/calibration/best_thresholds.json
 ```
+
+## Comparar contra V5 (paridad)
+
+Antes de dar por buena la migración, correr los dos sobre el MISMO clip y comparar:
+
+```bash
+python legacy/pipelineV5.py --source clip.mp4 --plate-model outputs/final_model --strict-plate --output-json outputs/v5.json
+python -m alpr.inference    --source clip.mp4 --plate-model outputs/final_model --strict-plate --output-json outputs/modular.json
+python -m alpr.tools.compare_runs --a outputs/v5.json --b outputs/modular.json --label-a V5 --label-b modular
+```
+
+Clasifica cada detección como coincidencia, lectura distinta del mismo vehículo, o presente en una sola
+corrida, y sale con código 0 solo si hay paridad (desfase de frames <= `--frame-tolerance`, 5 por defecto).
+Acepta varios videos a la vez (`--a a1.json a2.json --b b1.json b2.json`, emparejados por orden).
 
 ## Qué descarta el pipeline (y por qué)
 
