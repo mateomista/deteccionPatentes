@@ -9,6 +9,13 @@ otro en test, las métricas de test quedan infladas.
           --ground-truth data/ground_truth.csv --split calib=0.5 --split test=0.5 \
           --out splits/videos.json
 
+  Clasificación por carpetas de clase (clasificador de vehículos). Cada recorte exportado por el
+  pipeline se llama vehiculo_<track_id>__<video>.jpg: el grupo es (video, track_id), así todos los
+  recortes de un mismo vehículo quedan en la misma partición:
+      python -m alpr.data.splits classes --source data/clasificador/raw \
+          --group-regex "^(vehiculo_\\d+__.+)\\.jpg$" \
+          --split train=0.8 --split val=0.1 --split test=0.1 --out-dir data/clasificador
+
   Imágenes COCO (entrenamiento del detector de patentes):
       python -m alpr.data.splits coco --annotations data/ccpd_coco.json \
           --split train=0.8 --split val=0.1 --split test=0.1 --out-dir data/detector
@@ -171,6 +178,65 @@ def cmd_coco(args):
                   f, indent=2)
 
 
+def cmd_classes(args):
+    """<source>/<clase>/<imagen> -> <out-dir>/<partición>/<clase>/<imagen>, repartiendo por GRUPO.
+
+    La partición se hace DENTRO de cada clase (estratificada), de modo que las clases con suficientes
+    grupos aparecen en todas las particiones. Una clase con menos grupos que particiones no se reparte:
+    va entera a la partición más grande y se avisa."""
+    import shutil
+    from pathlib import Path
+
+    ratios = _parse_ratios(args.split)
+    src, out = Path(args.source), Path(args.out_dir)
+    rx = re.compile(args.group_regex) if args.group_regex else None
+    img_exts = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
+    classes = sorted(d.name for d in src.iterdir() if d.is_dir())
+    if not classes:
+        raise SystemExit(f"{src} no tiene carpetas de clase")
+    if out.exists() and any(out.iterdir()):
+        raise SystemExit(f"{out} ya tiene contenido: usá una carpeta nueva para no mezclar particiones")
+
+    needed = sum(1 for r in ratios.values() if r > 0)
+    biggest = max(ratios, key=ratios.get)
+    group_class = {}
+    counts = {c: {n: 0 for n in ratios} for c in classes}
+    for cls in classes:
+        files = sorted(f for f in (src / cls).iterdir() if f.suffix.lower() in img_exts)
+        groups = defaultdict(list)
+        for f in files:
+            m = rx.search(f.name) if rx else None
+            key = m.group(1) if (m and m.groups()) else f.stem
+            groups[key].append(f)
+            prev = group_class.setdefault(key, cls)
+            if prev != cls:
+                print(f"AVISO: el grupo {key!r} aparece en las clases {prev!r} y {cls!r} (¿error de etiquetado?)",
+                      file=sys.stderr)
+        if len(groups) < needed:
+            print(f"AVISO: la clase {cls!r} tiene {len(groups)} grupo(s) y hay {needed} particiones: "
+                  f"va entera a {biggest!r}", file=sys.stderr)
+            assignment = {k: biggest for k in groups}
+        else:
+            parts = split_groups(groups.keys(), ratios, args.seed)
+            assignment = {k: name for name, keys in parts.items() for k in keys}
+        for key, members in groups.items():
+            name = assignment[key]
+            dest = out / name / cls
+            dest.mkdir(parents=True, exist_ok=True)
+            for f in members:
+                shutil.copy2(f, dest / f.name)
+                counts[cls][name] += 1
+
+    os.makedirs(out, exist_ok=True)
+    with open(out / "splits_clasificacion.json", "w", encoding="utf-8") as f:
+        json.dump({"kind": "classification", "seed": args.seed, "ratios": ratios, "counts": counts}, f,
+                  indent=2, ensure_ascii=False)
+    width = max(len(c) for c in classes)
+    print(f"{'clase':<{width}} " + " ".join(f"{n:>6}" for n in ratios))
+    for cls in classes:
+        print(f"{cls:<{width}} " + " ".join(f"{counts[cls][n]:>6}" for n in ratios))
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -190,6 +256,15 @@ def main(argv=None):
     c.add_argument("--seed", type=int, default=42)
     c.add_argument("--out-dir", required=True)
     c.set_defaults(func=cmd_coco)
+
+    k = sub.add_parser("classes")
+    k.add_argument("--source", required=True, help="Carpeta con una subcarpeta por clase")
+    k.add_argument("--split", action="append", required=True, metavar="NOMBRE=PROPORCIÓN")
+    k.add_argument("--group-regex", default=None,
+                   help="El grupo 1 de la regex sobre el nombre de archivo define el vehículo")
+    k.add_argument("--seed", type=int, default=42)
+    k.add_argument("--out-dir", required=True)
+    k.set_defaults(func=cmd_classes)
 
     args = p.parse_args(argv)
     args.func(args)

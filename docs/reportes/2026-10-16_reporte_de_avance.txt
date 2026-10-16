@@ -1,0 +1,328 @@
+Reporte de Avance
+Equipo: [completar nombres]
+Día: 16/10/2026
+
+================================================================================
+1. RESUMEN Y ESTADO DE SITUACIÓN
+================================================================================
+Se propone adoptar el proyecto modular (paquete alpr/) como base de trabajo, conservando los dos
+scripts originales intactos en legacy/. Para quien prefiera seguir con scripts sueltos, las mismas
+mejoras están aplicadas a copias de esos scripts en standalone/. Lo que se verificó hoy:
+
+- Paridad con pipelineV5.py: sobre un clip real (468 frames), V5 y el proyecto modular detectaron las
+  mismas 6 patentes, en los mismos frames, con la misma confianza, votos e ID de seguimiento. Los
+  contadores internos del OCR también son idénticos (20 recortes, 46 intentos, 18 lecturas válidas).
+- Clasificador de vehículos integrado al proyecto (alpr/classify/) y corregido. Probado en modo
+  simulado en Windows: camino normal y camino de error.
+- Contrato productor-consumidor implementado: el pipeline exporta el recorte del vehículo de cada
+  patente registrada. Probado con el clip real: 6 recortes, uno por patente.
+- Auditoría de licencias de las 99 dependencias: Ultralytics (AGPL-3.0) no cumple el criterio y se
+  reemplazó por Hugging Face Transformers (Apache-2.0).
+- Script de entrenamiento del clasificador listo y probado con datos sintéticos.
+- 215 pruebas automáticas pasan (python -m pytest -q).
+
+Lo que NO existe todavía: un modelo entrenado de marca y modelo ni un dataset preparado. El clasificador
+solo funciona en modo simulado (--mock). La exactitud del sistema no está medida: no hay ground truth
+etiquetado.
+
+================================================================================
+2. CAMINO QUE SE PROPONE
+================================================================================
+1. Tomar alpr/ como base. El original queda en legacy/ con su hash (SHA256SUMS.txt): adoptar el proyecto
+   no impide volver atrás.
+2. Antes de retirar legacy/, repetir la comparación de paridad con V5 sobre 3 a 5 clips más (noche,
+   motos, más tráfico) con python -m alpr.tools.compare_runs. Criterio: paridad, o cada diferencia explicada.
+3. Etiquetar ground truth de al menos 50 vehículos, calibrar los umbrales en una partición y evaluar UNA
+   sola vez en otra.
+4. Armar el dataset de marca y modelo, entrenar el clasificador y promover los pesos solo si cumplen el
+   criterio de aceptación.
+5. Si el grupo decide NO adoptar el proyecto modular, se sigue con standalone/ (ver sección 4): no se
+   pierde nada de lo hecho hoy.
+
+================================================================================
+3. VENTAJAS DEL PROYECTO DESACOPLADO
+================================================================================
+Mantenimiento
+- pipelineV5.py es un solo archivo de 2.279 líneas. En el proyecto hay 36 módulos: el más grande tiene 716
+  líneas (pipeline.py) y solo otros dos pasan de 300 (imaging.py y train_classifier.py). Los cambios quedan
+  localizados.
+- La política de decisión (consenso, recuperación de tracks, deduplicación) existe una sola vez y la
+  comparten el pipeline real y el replay de la calibración. Una prueba verifica que producen lo mismo.
+- Los umbrales viajan en un objeto (Thresholds) que se guarda y se lee como JSON. En V5 son variables
+  globales que la línea de comandos pisa. Calibrar las 1.620 combinaciones de la grilla por defecto cuesta
+  segundos en el proyecto; correr el video completo por cada una serían unas 150 horas (estimación).
+- Cada cambio se verifica sin correr un video: 215 pruebas. El propio encabezado de V5 documenta que una
+  versión anterior no compilaba por fragmentos pegados a mano.
+- Las particiones se hacen por video o vehículo, nunca por frame, y la calibración se niega a correr sobre
+  videos de la partición de test.
+
+Productor-consumidor
+- El pipeline (productor) y el clasificador (consumidor) son procesos separados que se comunican por una
+  carpeta. El clasificador no puede frenar al pipeline, puede correr en CPU o en otra máquina y puede
+  reiniciarse sin perder trabajo: es idempotente por hash y persiste cada resultado.
+- El contrato vive en un solo módulo (alpr/contracts.py): nombre vehiculo_<track_id>__<video>.jpg y
+  escritura atómica (archivo temporal y renombrar), así el consumidor nunca lee un archivo a medio escribir.
+  El video va en el nombre porque el track_id de ByteTrack se reinicia en cada video: sin él, dos videos
+  distintos generarían el mismo nombre y la clasificación se asociaría a la patente equivocada.
+- La exportación está APAGADA por defecto; con ella encendida las detecciones no cambian (verificado con
+  pruebas y con el clip real).
+- Cada pieza se prueba por separado: el consumidor sin GPU, el productor con modelos simulados.
+- Evidencia de desacople: reemplazar Ultralytics por Transformers tocó una sola clase (VehicleClassifier).
+- Una herramienta (join_results) une patente y clasificación por (video, track_id).
+
+Límites que hay que conocer
+- El consumidor espera a que cada archivo esté estable: ~0,8 s por recorte, unos 75 por minuto con un solo
+  trabajador, antes de sumar la inferencia del modelo.
+- Solo se exportan vehículos con patente registrada; los que no tienen patente leída no se clasifican.
+- El costo de clasificar en la misma GPU que el pipeline no está medido (no hay modelo todavía).
+
+================================================================================
+4. LO HECHO EN LOS PIPELINES LEGACY (carpeta standalone/)
+================================================================================
+Copias de los scripts originales con las mismas mejoras. Los originales de legacy/ no se tocaron.
+
+- standalone/pipelineV5.py: exportación de recortes de vehículo (opción --export-vehicle-crops, apagada por
+  defecto). Cambio: +100 -3 líneas. Con la opción apagada produce exactamente lo mismo que el original
+  (una prueba corre los dos sobre el mismo video).
+- standalone/pipeclasificadorVehiculos.py: las 7 correcciones, nombre de archivo con video, campo video en
+  el resultado y reemplazo de Ultralytics por Transformers. Cambio: +133 -46 líneas.
+- standalone/join_results.py: une detecciones y clasificaciones. Solo biblioteca estándar.
+- Cada script lleva su archivo de diferencias (.patch) contra legacy/, para revisar en una pasada, y su
+  hash en standalone/SHA256SUMS.txt.
+
+Las 7 correcciones del clasificador (cada una con una prueba que fallaba sobre el código original):
+  1. Un recorte probado con --mock contaba como "ya procesado" para el modelo real.
+  2. Ctrl+C mandaba a fallidos/ los recortes que no llegaron a procesarse.
+  3. Si fallaba la escritura del JSONL después de mover el archivo, el registro se perdía en silencio.
+  4. Una línea JSONL cortada por una caída absorbía el registro siguiente.
+  5. La etiqueta "Mercedes-Benz" sola se partía en marca "Mercedes" y modelo "Benz"; una etiqueta de solo
+     marca ("toyota") daba marca vacía.
+  6. "Citroën_C3" y "citroen_c3" daban marcas distintas (tildes).
+  7. La lectura de imágenes usaba cv2.imread, que falla en Windows con rutas con tildes (no verificado en Windows).
+
+Verificación de que los dos caminos son equivalentes (tests/standalone, 60 pruebas):
+- Las 32 pruebas del clasificador pasan igual sobre el script suelto y sobre el paquete.
+- V5 con mejoras (exportación apagada) da el mismo resultado que el V5 original.
+- V5 con mejoras y el pipeline modular dan las mismas detecciones y exportan el mismo archivo.
+- El contrato de nombres es idéntico en las cuatro copias. Se rompió a propósito la exportación y el nombre
+  y las pruebas fallaron.
+
+Lo que cuesta no modularizar
+- El contrato queda copiado en cuatro archivos. Las pruebas avisan si divergen, pero no lo corrigen solas.
+- V5 sigue siendo un archivo de 2.376 líneas, sin calibración, evaluación ni pruebas unitarias. standalone/
+  agrega la exportación; no resuelve eso.
+- Nota técnica: pipelineV5.py usa finales de línea de Windows. Se agregó .gitattributes para que Git no los
+  convierta y los hashes registrados sigan coincidiendo.
+
+Otros hallazgos y correcciones de hoy
+- Los AVI exportados por el sistema de video declaran 120 fps pero el reloj interno da ~23 fps, variable
+  (intervalos entre 33 y 117 ms). Con el fps declarado, los tiempos de las detecciones saldrían unas 5 veces
+  menores. Se agregó alpr.tools.cut_video, que corta por el reloj del video y escribe el fps real. Siempre
+  pasar los videos por esa herramienta.
+- Un error real en la conversión CCPD y las particiones: en Windows las rutas usaban barra invertida, el
+  agrupamiento por regex no coincidía y una misma secuencia podía caer en entrenamiento y prueba (fuga de
+  datos). Corregido, con prueba. Era la prueba fallida que reportó el grupo anterior.
+- Registro de descartes (<salida>_descartes.json): en el clip, explicó por qué 3 vehículos no dieron patente.
+
+================================================================================
+5. PENDIENTE
+================================================================================
+Prioridad alta
+- Dataset de marca y modelo (clases prioritarias del parque automotor argentino, fuentes, estructura).
+- Entrenar y evaluar el clasificador con datos reales. El script existe pero no se probó con datos reales
+  ni con un modelo preentrenado.
+- Repetir la comprobación de paridad con V5 en 3 a 5 clips más.
+- Etiquetar el ground truth (al menos 50 vehículos) para calibrar y evaluar.
+
+Prioridad media
+- Tapar la zona del texto de la cámara (fecha, hora y nombre) en los recortes exportados: aparece en 4 de
+  los 6 recortes. Se debe hacer al exportar, con coordenadas del cuadro.
+- Probar en Windows lo que falta: que no repita lo ya procesado (el conteo del JSONL no debe crecer al
+  repetir), el modo continuo con Ctrl+C, y python -m pytest -q.
+- Probar la exportación con más videos reales.
+- Vehículos sin patente leída: hoy no se exportan ni se clasifican.
+- Medir el costo en GPU de clasificar junto al pipeline cuando exista el modelo.
+
+Decisiones que necesita el grupo
+- Si adopta el proyecto modular o sigue con los scripts sueltos (standalone/).
+- Licencias condicionales (ver sección 6): componentes LGPL y bibliotecas propietarias de NVIDIA.
+- Qué dataset y qué modelo base usar para el clasificador, con licencia permisiva verificada.
+- Política sobre los datos personales: los recortes muestran la patente legible; falta definir quién accede
+  y por cuánto tiempo se guardan los snapshots.
+- Hardware de producción: el reporte anterior habla de una RTX 3080 de 10 GB y el equipo de desarrollo tiene
+  una RTX 5070 de 12 GB.
+- El repositorio remoto solo tiene la rama de trabajo (claude/pipeline-training-validation-split-338vmj);
+  no hay rama base (main), por lo que no se pudo abrir un PR.
+
+================================================================================
+6. PRECAUCIONES CON LAS LICENCIAS AL ELEGIR MODELOS
+================================================================================
+Criterio del proyecto: solo Apache-2.0, MIT, BSD o similares, que permitan comercializar sin pagar ni abrir
+el código propio.
+
+Caso real de hoy: Ultralytics (YOLO) es AGPL-3.0. Es copyleft fuerte: usarlo en un servicio o distribuirlo
+obliga a publicar el código derivado, o a comprar una licencia comercial. Lo usaba el clasificador original.
+Se reemplazó por Transformers (Apache-2.0). Una prueba automática impide que vuelva a importarse.
+
+Qué revisar siempre
+1. La licencia del CÓDIGO, la de los PESOS del modelo y la del DATASET con que se entrenó son tres cosas
+   distintas. Un paquete Apache puede cargar pesos con otra licencia.
+2. Rechazar: "non-commercial", "research only", CC BY-NC, CC BY-SA, GPL, AGPL. Ojo con modelos de familias
+   como YOLO (Ultralytics es AGPL; verificar cada variante).
+3. CC BY 4.0 permite uso comercial pero exige atribución. Las licencias OpenRAIL tienen restricciones de uso:
+   revisarlas antes de aceptarlas.
+4. Un modelo con licencia permisiva puede haberse entrenado con datos de licencia restringida: leer la ficha.
+5. La licencia que figura en PyPI o en la ficha es lo que declara el autor. No es asesoramiento legal.
+6. Registrar todo lo nuevo en docs/LICENCIAS.md con su licencia. El script de entrenamiento exige declarar las
+   licencias del modelo base y del dataset y se detiene si no son permisivas.
+
+Resultado de la auditoría de las 99 dependencias (docs/LICENCIAS.md)
+- 80 permisivas (Apache, MIT, BSD, PSF...): cumplen.
+- 3 AGPL (ultralytics, ultralytics-thop, ultralytics-platform): eliminadas.
+- 1 LGPL: python-bidi (lo trae EasyOCR). Condicional.
+- FFmpeg dentro de OpenCV es LGPL (el propio paquete lo indica). Condicional.
+- 15 de NVIDIA CUDA que instala torch para GPU: software propietario de NVIDIA. Condicional e inevitable con
+  GPU NVIDIA.
+Sin Ultralytics quedan 96 paquetes. La LGPL permite uso comercial con condiciones, pero no es permisiva como
+Apache o MIT: el grupo debe decidir si la acepta.
+
+Modelos y datasets (no cubiertos por la auditoría de paquetes)
+- Verificado: RF-DETR Medium es Apache-2.0 (solo los modelos XL y 2XL usan otra licencia).
+- Sin verificar (no se pudo consultar Hugging Face desde el entorno de la auditoría): el modelo base del
+  detector de patentes (PekingU/rtdetr_r50vd), los pesos de EasyOCR y el dataset CCPD (que además son
+  patentes chinas).
+
+================================================================================
+7. QUÉ BUSCAR PARA ENTRENAR EL CLASIFICADOR
+================================================================================
+- Que se parezca a nuestra cámara: vista trasera en tres cuartos, desde arriba, 1920x1080, vehículos de
+  750 a 1.050 px de ancho en el cuadro. Un dataset de autos de frente o de otro mercado rinde mal. Lo más
+  sólido es afinar con recortes propios, que el pipeline ya exporta.
+- Qué se ve en nuestros recortes (6 de 6 revisados): los logos y nombres de modelo son legibles (Peugeot 206,
+  Toyota Etios, Jeep Renegade, Ford Fiesta, Nissan Pathfinder, Renault Kangoo). Los 6 vehículos tocan el borde
+  del cuadro (quedan cortados de un costado). 4 de 6 traen texto de la cámara. En uno cruza un poste de luz.
+- Clases con nombre Marca_Modelo (el parser reconoce 37 marcas de su catálogo). Una marca que no esté en el
+  catálogo con varios guiones bajos queda sin marca y modelo: hay que agregarla al catálogo.
+- Cantidad: cuantas más imágenes por clase, mejor. Con pocas por clase los resultados no son confiables y
+  distinguir modelos de una misma marca exige más que distinguir marcas. Conviene empezar por marca, o por los
+  modelos más frecuentes.
+- Una clase "otros": el modelo siempre responde alguna clase conocida. Hoy el umbral de confianza del script es
+  0,0, así que nada se marca como dudoso.
+- Partición por vehículo, nunca por imagen: el mismo auto con varios frames debe quedar en una sola partición.
+  alpr.data.splits classes lo hace, y el entrenamiento detecta fuga entre particiones (copias exactas y casi
+  idénticas) y se detiene.
+- Licencia del dataset permisiva y que permita uso comercial.
+- Que la licencia del modelo base sea permisiva, declarada en su ficha.
+- Datasets propuestos (3 de Roboflow Universe). NO se pudieron verificar: Roboflow no es accesible desde
+  nuestro entorno. Para cada uno hay que comprobar en su página:
+    https://universe.roboflow.com/mete-turan/vehicle-make-model-classifier
+    https://universe.roboflow.com/milenkos-workspace-9ro3m/car-make-vyvjz
+    https://universe.roboflow.com/car-makemodel/car-make-model-recognition-q0kvx
+  a) La licencia que muestra la página. Aceptables: CC BY 4.0, MIT, dominio público. No: CC BY-NC, CC BY-SA.
+  b) Si es un proyecto de clasificación (se exporta en carpetas por clase) o de detección (cajas con clase:
+     habría que recortar cada caja a su clase, y esa herramienta no existe todavía).
+  c) Cantidad de imágenes y de clases, y si las clases son marca o marca y modelo. Los nombres hay que llevarlos
+     a Marca_Modelo.
+  d) Qué vistas tiene (¿traseras?) y de qué mercado son los autos. Faltan modelos argentinos si es de otro país.
+  e) De dónde salen las imágenes y con qué derechos.
+  f) Imágenes aumentadas o repetidas: Roboflow genera variantes de una misma foto. El script de entrenamiento
+     verifica que no haya copias entre entrenamiento, validación y prueba.
+  g) Calidad de las etiquetas: revisar a ojo una muestra por clase.
+  Un dataset externo sirve como punto de partida; la exactitud real se mide con recortes de NUESTRA cámara.
+
+================================================================================
+8. CÓMO INICIALIZAR EL ENTORNO VIRTUAL (Windows, PowerShell)
+================================================================================
+Desde la raíz del repositorio, pegando UN comando por vez:
+
+  cd E:\GIBD\Script\deteccionPatentes
+  py -3.12 -m venv venv
+  Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+  .\venv\Scripts\Activate.ps1
+  python -m pip install --upgrade pip
+  pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
+  pip install -r requirements.txt
+  pip install -r requirements-dev.txt
+  python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+  python -m pytest -q
+
+Notas
+- Usar Python 3.12. Con 3.15 falla la instalación (scikit-image no tiene instalador precompilado).
+- El prompt debe mostrar (venv). La política de ejecución se cambia una sola vez.
+- Instalar torch ANTES que el resto, para que pip no lo reemplace por la versión de CPU.
+- La línea de torch es para una RTX 5070 (CUDA 13). Una GPU RTX 50xx necesita torch con CUDA 12.8 o superior.
+  Para otra GPU, ajustar según el comando de pytorch.org y la "CUDA Version" de nvidia-smi.
+- El resultado esperado es "True" en la línea de torch y todas las pruebas en verde (215 pasaron hoy).
+- watchdog es opcional y NO se instala sin autorización del grupo (pip install -r requirements-classifier.txt).
+- Pegar los comandos de a uno: en PowerShell las líneas pegadas juntas se fusionan en un solo comando.
+- Para correr el pipeline hace falta el modelo de patentes en outputs\final_model (config, pesos y
+  preprocesador). No está en el repositorio: los pesos son demasiado grandes para GitHub y están ignorados.
+
+================================================================================
+9. CÓMO ENTRENAR EL CLASIFICADOR
+================================================================================
+Con el entorno activo (sección 8):
+
+  1) Armar carpetas por clase con nombre Marca_Modelo, de un dataset exportado o de recortes propios:
+       data\clasificador\raw\Toyota_Etios\vehiculo_2__prueba_test.jpg
+       data\clasificador\raw\Peugeot_206\...
+  2) Repartir en train/val/test sin mezclar el mismo vehículo entre particiones:
+       python -m alpr.data.splits classes --source data\clasificador\raw --out-dir data\clasificador --group-regex "^(vehiculo_\d+__.+)\.jpg$" --split train=0.8 --split val=0.1 --split test=0.1
+  3) Entrenar (hay que declarar las licencias del modelo base y del dataset):
+       python -m alpr.train.train_classifier --data-dir data\clasificador --base-model <modelo base> --base-model-license apache-2.0 --dataset-license "CC BY 4.0" --dataset-source "<url o descripción>" --output-dir outputs\clasificador_candidato --min-accuracy 0.90 --promote-to weights\vehicle_classifier
+  4) Usarlo:
+       python -m alpr.classify --model weights\vehicle_classifier --device cuda
+
+Qué hace el entrenamiento, en orden
+- Rechaza licencias no permisivas (código de salida 2).
+- Detecta fuga de datos entre particiones y se detiene (código de salida 2).
+- Entrena; la partición val sirve para elegir el mejor punto.
+- Evalúa en val y test: exactitud, precisión y recall por clase, matriz de confusión.
+- Mide el tiempo de inferencia por imagen y la memoria de GPU.
+- Copia los pesos a weights\vehicle_classifier SOLO si la exactitud en test alcanza --min-accuracy. Si no,
+  sale con código 3 y no toca weights\.
+- Deja en outputs\clasificador_candidato: modelo\, metrics.json, matriz de confusión en CSV y train_config.json
+  (modelo base, licencias, clases, versiones de las librerías, commit de Git).
+
+Qué NO se verificó
+- Está probado con un modelo diminuto y un dataset sintético: aprende, evalúa, promueve y rechaza como
+  corresponde. NO se probó con datos reales ni con un modelo preentrenado. El tiempo de entrenamiento, la
+  exactitud real y el uso de memoria son desconocidos hasta entonces.
+- --base-model necesita un modelo de Transformers para clasificación de imágenes con licencia permisiva en su
+  ficha (si es un id de Hugging Face, se descarga y hace falta internet). El valor de 0,90 de --min-accuracy es
+  un ejemplo, no un umbral calibrado.
+
+================================================================================
+10. SOBRE ANTIGRAVITY Y LA CONVERSACIÓN DEL GRUPO ANTERIOR
+================================================================================
+El reporte anterior propone seguir trabajando en Antigravity usando "el único chat existente", donde están la
+auditoría y el contexto previo. Nosotros no tenemos una cuenta en común ni acceso a esa conversación.
+Consecuencias:
+- No podemos ver ni verificar su auditoría ni las decisiones tomadas ahí. Lo que sabemos de ese trabajo es solo
+  lo que dice su reporte de texto. Tampoco se abrió el enlace de la conversación compartida de ChatGPT.
+- El contexto de un proyecto no debería depender de una conversación individual: si esa cuenta o ese chat no
+  están disponibles, el contexto se pierde.
+
+Propuesta
+- Tomar el repositorio Git como única fuente de verdad: código, pruebas, docs/LICENCIAS.md,
+  docs/CONTEXTO_DEL_PROYECTO.md (criterios y decisiones), docs/reportes/ (reportes diarios) y README.md.
+  Cualquier persona o herramienta puede retomar el trabajo leyendo el repositorio.
+- Si el grupo quiere usar Antigravity, definir una cuenta compartida; y en todo caso volcar al repositorio lo
+  que se decida, en lugar de dejarlo solo en el chat.
+- Se preparó docs/CONTEXTO_DEL_PROYECTO.md con los criterios del reporte anterior (cambios incrementales con
+  pruebas, validar con resultados reales, no instalar sin autorización, respaldos con hash) y las decisiones de
+  hoy. Falta que el grupo lo revise y lo mantenga.
+
+================================================================================
+11. RIESGOS Y COSAS A TENER EN CUENTA
+================================================================================
+- La paridad con V5 se comprobó en un solo clip de 20 s con 6 detecciones: descarta una diferencia grande, no
+  demuestra equivalencia general.
+- Las pruebas usan modelos simulados. Lo que corrió con modelos y video reales fue: el pipeline, la
+  exportación, el clasificador simulado y la comparación con V5.
+- Que una persona reconozca el auto en el recorte no mide cuánto acertará el modelo.
+- Las mejoras al clasificador (cierre con Ctrl+C, escritura del JSONL) se probaron en Linux; en Windows solo se
+  probó el camino normal y el camino de error en modo simulado.
+- Las licencias son las que declaran los autores. No es asesoramiento legal.
+- Herramienta usada hoy: Claude Code. Todo el trabajo queda en Git (rama
+  claude/pipeline-training-validation-split-338vmj).

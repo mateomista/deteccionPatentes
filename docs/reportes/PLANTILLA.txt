@@ -1,0 +1,20 @@
+Reporte de Avance
+Equipo: [completar]
+Día: [dd/mm/aaaa]
+
+1. Resumen y Estado de Situación
+[Qué se hizo, en qué estado quedó el proyecto y qué cambió respecto del reporte anterior.]
+
+2. Avances Técnicos de la Sesión
+[Una línea por avance, con lo VERIFICADO (comando y resultado) separado de lo que NO se verificó.]
+
+3. Decisiones y Criterios
+[Decisiones tomadas hoy y por qué. Licencias de todo lo nuevo que se incorporó.]
+
+4. Pendiente y Próximas Tareas
+[Lo que quedó sin hacer, en orden de prioridad, y qué decisión necesita del grupo.]
+
+5. Riesgos y Cosas a Tener en Cuenta
+[Lo que podría salir mal o no se pudo comprobar.]
+
+Verificación antes de enviar: python -m pytest -q  (copiar el resultado)

@@ -41,8 +41,8 @@ alpr/
   pipeline.py       ALPRPipeline.run_video(): reutilizable, devuelve RunResult
   replay.py         re-decide el consenso OFFLINE sobre lecturas grabadas              (sin GPU)
   inference.py      CLI de producción
-  data/             ccpd.py (CCPD→COCO) · splits.py (particiones sin fuga)
-  train/            train_rtdetr.py
+  data/             ccpd.py (CCPD→COCO) · splits.py (particiones sin fuga) · leakage.py (detecta fuga)
+  train/            train_rtdetr.py (detector de patentes) · train_classifier.py (marca y modelo)
   calibrate/        calibrate.py  (record → sweep)
   contracts.py      contrato productor-consumidor (nombres de archivo, escritura atómica)
   classify/         clasificador offline de vehículos (marca/modelo), consumidor desacoplado
@@ -177,6 +177,37 @@ con una prueba que **fallaba sobre el código original** (`tests/classify/`):
   recién en el próximo arranque; el sondeo periódico sí lo recupera.
 - **Umbral de confianza en 0,0:** el estado `below_threshold` nunca se produce, y no hay un flag para cambiarlo.
 - **Rutas con tildes:** la lectura de imágenes usa `np.fromfile` + `imdecode`, pero no se verificó en Windows.
+
+## Entrenar el clasificador de marca y modelo
+
+```bash
+# 1) Carpetas por clase con nombre Marca_Modelo (de un dataset exportado o de recortes propios)
+#    data/clasificador/raw/Toyota_Etios/vehiculo_2__prueba_test.jpg ...
+
+# 2) Repartir en train/val/test SIN mezclar el mismo vehículo entre particiones
+python -m alpr.data.splits classes --source data/clasificador/raw --out-dir data/clasificador \
+    --group-regex "^(vehiculo_\d+__.+)\.jpg$" --split train=0.8 --split val=0.1 --split test=0.1
+
+# 3) Entrenar. Hay que declarar la licencia del modelo base y del dataset (solo se aceptan permisivas)
+python -m alpr.train.train_classifier --data-dir data/clasificador \
+    --base-model <modelo base> --base-model-license apache-2.0 \
+    --dataset-license "CC BY 4.0" --dataset-source "<url o descripción>" \
+    --output-dir outputs/clasificador_candidato \
+    --min-accuracy 0.90 --promote-to weights/vehicle_classifier
+
+# 4) Usarlo (el clasificador lee el directorio weights/vehicle_classifier)
+python -m alpr.classify --model weights/vehicle_classifier --device cuda
+```
+
+El script se detiene (código 2) si la licencia declarada no es permisiva o si hay **fuga de datos** entre
+particiones (imágenes idénticas o casi idénticas). Deja en `--output-dir`: `modelo/`, `metrics.json` (exactitud,
+precisión y recall por clase, tiempo de inferencia y memoria de GPU), la matriz de confusión en CSV y
+`train_config.json` (modelo base, licencias, clases, versiones, commit). Solo copia los pesos a `--promote-to`
+si la exactitud en **test** alcanza `--min-accuracy` (si no, sale con código 3 y no toca `weights/`).
+
+Está probado con un modelo diminuto y un dataset sintético (aprende, evalúa, promueve y rechaza como
+corresponde); **no** se probó con datos reales ni con un modelo preentrenado, así que el tiempo de entrenamiento y la
+exactitud real son desconocidos.
 
 ## Comparar contra V5 (paridad)
 
