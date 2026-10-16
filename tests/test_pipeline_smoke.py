@@ -231,3 +231,8 @@ def test_producer_to_consumer_end_to_end(tmp_path, video):
     assert joined[0]["clasificacion"]["estado"] == "mock" and not no_class and not orphans
     assert not list(export.glob("vehiculo_*.jpg"))                  # el consumidor los movió a procesados/
     json.dumps(joined)
+
+
+def test_recorded_observations_include_the_frame_size(tmp_path, video):
+    rec, _ = build(tmp_path, record=True)
+    assert rec.run_video(video).observations["frame_size"] == [W, H]

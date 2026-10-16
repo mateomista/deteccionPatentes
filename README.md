@@ -47,6 +47,7 @@ alpr/
   contracts.py      contrato productor-consumidor (nombres de archivo, escritura atómica)
   classify/         clasificador offline de vehículos (marca/modelo), consumidor desacoplado
   tools/            cut_video.py · compare_runs.py (V5 vs modular) · join_results.py (patente + clasificación)
+                    · vehicle_crop_report.py (¿hay lecturas con el vehículo completo en cuadro?)
   evaluate/         e2e.py · ocr_eval.py · detector_eval.py · metrics.py · detection_metrics.py
 legacy/            pipelineV5.py original, para comparar salidas contra el refactor
 tests/              56 tests: lógica pura + pipeline real con modelos simulados

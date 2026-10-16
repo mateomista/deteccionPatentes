@@ -630,6 +630,7 @@ class ALPRPipeline:
                 "ocr": {"dual_ocr": self.options.dual_ocr,
                         "max_attempts": self.options.ocr_max_attempts,
                         "disable_focus_mask": self.options.disable_focus_mask},
+                "frame_size": [int(self.video_info.resolution_wh[0]), int(self.video_info.resolution_wh[1])],
                 "detection_thresholds": {"confidence_vehicle": self.th.confidence_vehicle,
                                          "confidence_plate": self.th.confidence_plate},
                 "tracks": {str(k): v for k, v in self._observations.items()},
