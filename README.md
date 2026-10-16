@@ -108,7 +108,7 @@ alpr/classify/
   labels.py       catálogo de marcas y parser de etiquetas (lógica pura)
   files.py        candidatos, hash SHA-256 y espera de archivo estable (Windows)
   results.py      ClassificationResult y escritor JSONL
-  classifier.py   YOLO-cls o modo --mock
+  classifier.py   clasificador Transformers (Apache-2.0) o modo --mock
   watchers.py     watchdog (opcional) o sondeo periódico
   processor.py    cola + worker idempotente
   cli.py          python -m alpr.classify
@@ -120,8 +120,9 @@ python -m alpr.classify --mock --single-run --device cpu --input-dir <carpeta> -
 python -m pytest tests/classify -q
 ```
 
-`watchdog` y `ultralytics` son opcionales y NO se instalan con `requirements.txt`
-(ver `requirements-classifier.txt`; instalar solo con autorización del equipo).
+`watchdog` es opcional y NO se instala con `requirements.txt` (ver `requirements-classifier.txt`; instalar solo
+con autorización del equipo). El clasificador real usa `torch` y `transformers` (Apache-2.0); **no usa
+Ultralytics**, que es AGPL-3.0 (ver `docs/LICENCIAS.md`).
 
 ### Contrato con el pipeline (productor)
 
@@ -170,12 +171,12 @@ con una prueba que **fallaba sobre el código original** (`tests/classify/`):
 
 - **Sin patente leída no hay recorte.** El productor exporta un recorte por patente registrada; los vehículos
   cuya patente no se leyó no se clasifican todavía.
-- **Sin modelo ni dataset.** No hay `weights/vehicle_classifier.pt`; solo funciona `--mock`.
+- **Sin modelo ni dataset.** No hay un modelo en `weights/vehicle_classifier/` (un directorio de Transformers
+  con `config.json` y pesos); solo funciona `--mock`. Las clases se nombran `Marca_Modelo`.
 - **Modo watchdog sin reescaneo.** Si la cola (1000) se llena, un archivo no encolado se recupera
   recién en el próximo arranque; el sondeo periódico sí lo recupera.
 - **Umbral de confianza en 0,0:** el estado `below_threshold` nunca se produce, y no hay un flag para cambiarlo.
-- **Rutas con tildes en la clasificación real:** la lectura de la espera es segura, pero no se verificó
-  cómo carga `ultralytics` las imágenes con esas rutas en Windows.
+- **Rutas con tildes:** la lectura de imágenes usa `np.fromfile` + `imdecode`, pero no se verificó en Windows.
 
 ## Comparar contra V5 (paridad)
 

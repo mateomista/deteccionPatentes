@@ -6,7 +6,7 @@ PROCESSED_DIR_NAME = "procesados"
 FAILED_DIR_NAME = "fallidos"
 
 RESULTS_FILE = Path("outputs/clasificaciones_vehiculos.jsonl")
-MODEL_PATH = Path("weights/vehicle_classifier.pt")
+MODEL_PATH = Path("weights/vehicle_classifier")   # directorio del modelo (Transformers)
 
 SUPPORTED_EXTENSIONS = {
     ".jpg",

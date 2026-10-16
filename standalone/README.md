@@ -6,7 +6,7 @@ mejoras que tiene el paquete `alpr/`; los originales de `legacy/` no se tocaron.
 | Archivo | Parte de | Qué cambia | Tamaño del cambio |
 |---|---|---|---|
 | `pipelineV5.py` | `legacy/pipelineV5.py` | Exporta el recorte del vehículo de cada patente registrada (`--export-vehicle-crops`, **apagado por defecto**) | `pipelineV5.patch`: +100 −3 |
-| `pipeclasificadorVehiculos.py` | `legacy/pipeclasificadorVehiculos.py` | 7 correcciones + nombre de archivo con video + campo `video` | `pipeclasificadorVehiculos.patch`: +91 −19 |
+| `pipeclasificadorVehiculos.py` | `legacy/pipeclasificadorVehiculos.py` | 7 correcciones + nombre de archivo con video + campo `video` + **sin Ultralytics (AGPL-3.0)**, usa Transformers (Apache-2.0) | `pipeclasificadorVehiculos.patch` |
 | `join_results.py` | (nuevo) | Une detecciones y clasificaciones por (video, track_id). Solo biblioteca estándar | — |
 
 Los `.patch` son los diffs exactos contra `legacy/` (para revisar en una pasada). `SHA256SUMS.txt` registra

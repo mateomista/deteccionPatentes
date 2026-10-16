@@ -65,7 +65,7 @@ def parse_args(argv=None):
         "--model",
         type=Path,
         default=MODEL_PATH,
-        help=f"Ruta al peso YOLO-cls fine-tuneado. Default: {MODEL_PATH}",
+        help=f"Directorio del modelo de clasificación (Transformers: config.json + pesos). Default: {MODEL_PATH}",
     )
 
     parser.add_argument(

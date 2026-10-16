@@ -2,9 +2,9 @@
 # No se instalan con requirements.txt. Instalar solo con autorización del equipo:
 #   pip install -r requirements-classifier.txt
 #
-# watchdog: detecta archivos nuevos al instante. Sin él, el clasificador funciona igual
-#           con sondeo periódico (PollingWatcher).
+# watchdog (Apache-2.0): detecta archivos nuevos al instante. Sin él, el clasificador funciona
+#           igual con sondeo periódico (PollingWatcher).
 watchdog
-# ultralytics: necesario SOLO para clasificar con un modelo real (YOLO-cls).
-#              El modo --mock y las pruebas no lo necesitan.
-ultralytics
+#
+# El clasificador real usa torch + transformers (Apache-2.0), que ya están en requirements.txt.
+# NO usar Ultralytics/YOLO-cls: es AGPL-3.0 (copyleft). Ver docs/LICENCIAS.md.

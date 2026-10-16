@@ -9,6 +9,9 @@ se cambia en `alpr/`.
 | `pipelineV5.py` | `alpr/` (pipeline, entrenamiento, calibración, evaluación) |
 | `pipeclasificadorVehiculos.py` | `alpr/classify/` |
 
+**Aviso de licencia:** `pipeclasificadorVehiculos.py` usa Ultralytics (AGPL-3.0). No usarlo en producción; ver
+`docs/LICENCIAS.md`. Las versiones sin Ultralytics son `alpr/classify/` y `standalone/pipeclasificadorVehiculos.py`.
+
 `SHA256SUMS.txt` registra el hash de cada original. Para verificar que nadie los modificó:
 
 ```bash

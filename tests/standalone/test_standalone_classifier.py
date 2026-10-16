@@ -30,7 +30,7 @@ def make_image(path, seed=0):
 
 
 class FakeClassifier:
-    """Clasificador 'real' simulado (mock=False) para no depender de ultralytics."""
+    """Clasificador 'real' simulado (mock=False) para no depender de un modelo entrenado."""
     mock = False
 
     def classify(self, image_path):
