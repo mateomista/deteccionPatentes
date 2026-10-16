@@ -76,3 +76,28 @@ def test_build_coco_from_ccpd_names(tmp_path):
     assert skipped == 1 and len(coco["images"]) == 1
     assert coco["annotations"][0]["bbox"] == [154, 383, 232, 90]
     assert coco["images"][0]["file_name"] == f"sub/{CCPD_NAME}"
+
+
+def test_coco_split_groups_windows_style_paths_together(tmp_path):
+    """Un COCO generado en Windows trae barras invertidas: las secuencias deben seguir juntas."""
+    images = [{"id": i, "file_name": f"seq{i // 4}\\f{i}.jpg", "width": 10, "height": 10} for i in range(40)]
+    anns = [{"id": i, "image_id": i, "category_id": 0, "bbox": [1, 1, 2, 2], "area": 4, "iscrowd": 0}
+            for i in range(40)]
+    src = tmp_path / "all.json"
+    src.write_text(json.dumps({"images": images, "annotations": anns,
+                               "categories": [{"id": 0, "name": "plate"}]}))
+    out = tmp_path / "out"
+    splits_main(["coco", "--annotations", str(src), "--split", "train=0.7", "--split", "val=0.15",
+                 "--split", "test=0.15", "--group-regex", r"^(seq\d+)/", "--out-dir", str(out)])
+    seqs = {}
+    for name in ("train", "val", "test"):
+        d = json.loads((out / name).with_suffix(".json").read_text())
+        seqs[name] = {i["file_name"].split("\\")[0] for i in d["images"]}
+    assert not (seqs["train"] & seqs["val"]) and not (seqs["train"] & seqs["test"]) \
+        and not (seqs["val"] & seqs["test"])
+
+
+def test_to_posix_converts_windows_separators():
+    from alpr.data.ccpd import to_posix
+    assert to_posix("sub\\x.jpg") == "sub/x.jpg"
+    assert to_posix("sub/x.jpg") == "sub/x.jpg"

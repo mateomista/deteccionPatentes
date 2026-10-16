@@ -130,7 +130,11 @@ def cmd_coco(args):
     group_of = {}
     for img in coco["images"]:
         if rx:
-            m = rx.search(img["file_name"])
+            # Se normaliza a '/': un COCO generado en Windows trae '\\' y la regex
+            # (escrita con '/') no coincidiría, dejando cada imagen en su propio grupo
+            # (fuga de datos entre particiones).
+            name = img["file_name"].replace("\\", "/")
+            m = rx.search(name)
             group_of[img["id"]] = m.group(1) if m and m.groups() else img["file_name"]
         else:
             group_of[img["id"]] = str(img["id"])    # cada imagen es su propio grupo

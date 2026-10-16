@@ -18,6 +18,13 @@ import os
 IMG_EXTS = (".jpg", ".jpeg", ".png")
 
 
+def to_posix(path):
+    """Rutas del JSON COCO siempre con '/': en Windows os.path.relpath devuelve
+    barras invertidas, y eso rompe los --group-regex de alpr.data.splits y hace
+    que los datasets no sean portables entre sistemas."""
+    return str(path).replace("\\", "/")
+
+
 def parse_ccpd_bbox(filename):
     """Devuelve (x1, y1, x2, y2) desde el nombre de archivo CCPD, o None si no parsea."""
     stem = os.path.splitext(os.path.basename(filename))[0]
@@ -66,7 +73,7 @@ def build_coco(images_dir, rel_to=None):
                 skipped += 1
                 continue
             image_id = len(images) + 1
-            images.append({"id": image_id, "file_name": os.path.relpath(full, rel_to),
+            images.append({"id": image_id, "file_name": to_posix(os.path.relpath(full, rel_to)),
                            "width": w, "height": h})
             annotations.append({"id": next_ann, "image_id": image_id, "category_id": 0,
                                 "bbox": [x1, y1, x2 - x1, y2 - y1],
