@@ -1,0 +1,2 @@
+72ad48217a84801fb1f5727b79f59c6ee848e06ae5ba2648f9e24659c982cec0  pipelineV5.py
+348a859e88541abaaf54a6724ddbdcb88caf77d627902a5c914b1a7240b543f7  pipeclasificadorVehiculos.py

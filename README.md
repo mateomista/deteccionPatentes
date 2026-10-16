@@ -44,6 +44,7 @@ alpr/
   data/             ccpd.py (CCPD→COCO) · splits.py (particiones sin fuga)
   train/            train_rtdetr.py
   calibrate/        calibrate.py  (record → sweep)
+  classify/         clasificador offline de vehículos (marca/modelo), consumidor desacoplado
   tools/            cut_video.py (cortar un tramo sin ffmpeg) · compare_runs.py (V5 vs modular)
   evaluate/         e2e.py · ocr_eval.py · detector_eval.py · metrics.py · detection_metrics.py
 legacy/            pipelineV5.py original, para comparar salidas contra el refactor
@@ -92,6 +93,62 @@ python -m alpr.evaluate.e2e --split test --strict-plate --default-thresholds --o
 python -m alpr.inference --source inputs/trafico.mp4 --strict-plate \
     --thresholds outputs/calibration/best_thresholds.json
 ```
+
+## Clasificador de vehículos (`alpr.classify`)
+
+Consumidor desacoplado que clasifica la marca y el modelo de cada recorte de vehículo
+(`vehiculo_<track_id>.<ext>`) de una carpeta. Es el script `pipeclasificadorVehiculos.py`
+reorganizado en módulos; el original sigue intacto en `legacy/`.
+
+```
+alpr/classify/
+  config.py       constantes (carpetas, tiempos, reintentos)
+  labels.py       catálogo de marcas y parser de etiquetas (lógica pura)
+  files.py        candidatos, hash SHA-256 y espera de archivo estable (Windows)
+  results.py      ClassificationResult y escritor JSONL
+  classifier.py   YOLO-cls o modo --mock
+  watchers.py     watchdog (opcional) o sondeo periódico
+  processor.py    cola + worker idempotente
+  cli.py          python -m alpr.classify
+```
+
+```bash
+python -m alpr.classify --help
+python -m alpr.classify --mock --single-run --device cpu --input-dir <carpeta> --results-file <salida.jsonl>
+python -m pytest tests/classify -q
+```
+
+`watchdog` y `ultralytics` son opcionales y NO se instalan con `requirements.txt`
+(ver `requirements-classifier.txt`; instalar solo con autorización del equipo).
+
+### Qué cambió respecto del original
+
+La reorganización conserva el código: cada clase y función es idéntica salvo `main`, que ahora
+configura el logging al arrancar y no al importar. Además se corrigieron estos problemas, cada uno
+con una prueba que **fallaba sobre el código original** (`tests/classify/`):
+
+| Problema en el original | Corrección |
+|---|---|
+| Un recorte probado con `--mock` contaba como "ya procesado" para el modelo real | El modo real ignora los registros `mock` al cargar los hashes |
+| Ctrl+C mandaba a `fallidos/` los recortes que no llegaron a procesarse | Con cierre solicitado quedan en la carpeta de entrada para el próximo arranque |
+| Si fallaba la escritura del JSONL después de mover el archivo, el registro se perdía en silencio | La escritura se reintenta y, si no se logra, el registro completo queda en el log |
+| Una línea JSONL cortada por una caída absorbía el registro siguiente | Se cierra la línea parcial antes de anexar |
+| La etiqueta `Mercedes-Benz` sola se partía en marca `Mercedes` y modelo `Benz`; una etiqueta de solo marca (`toyota`) daba `(None, None)` | Una etiqueta que es una marca del catálogo devuelve `(marca, None)` |
+| `Citroën_C3` y `citroen_c3` daban marcas distintas | La comparación con el catálogo ignora tildes |
+| La espera de archivo estable usaba `cv2.imread`, que falla en Windows con rutas con tildes o ñ | Se lee con `np.fromfile` + `imdecode` (no verificado en Windows) |
+
+### Limitaciones conocidas (no se tocaron)
+
+- **El productor no existe todavía.** Ni `legacy/pipelineV5.py` ni `alpr/pipeline.py` guardan los
+  recortes completos de vehículos que este consumidor espera.
+- **El `track_id` es solo por video.** ByteTrack reinicia los IDs en cada video: `vehiculo_1.jpg` de dos
+  videos distintos colisionaría. El contrato de archivos debería incluir el nombre del video.
+- **Sin modelo ni dataset.** No hay `weights/vehicle_classifier.pt`; solo funciona `--mock`.
+- **Modo watchdog sin reescaneo.** Si la cola (1000) se llena, un archivo no encolado se recupera
+  recién en el próximo arranque; el sondeo periódico sí lo recupera.
+- **Umbral de confianza en 0,0:** el estado `below_threshold` nunca se produce, y no hay un flag para cambiarlo.
+- **Rutas con tildes en la clasificación real:** la lectura de la espera es segura, pero no se verificó
+  cómo carga `ultralytics` las imágenes con esas rutas en Windows.
 
 ## Comparar contra V5 (paridad)
 

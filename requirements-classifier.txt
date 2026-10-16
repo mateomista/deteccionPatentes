@@ -1,0 +1,10 @@
+# Dependencias OPCIONALES del clasificador de vehículos (alpr.classify).
+# No se instalan con requirements.txt. Instalar solo con autorización del equipo:
+#   pip install -r requirements-classifier.txt
+#
+# watchdog: detecta archivos nuevos al instante. Sin él, el clasificador funciona igual
+#           con sondeo periódico (PollingWatcher).
+watchdog
+# ultralytics: necesario SOLO para clasificar con un modelo real (YOLO-cls).
+#              El modo --mock y las pruebas no lo necesitan.
+ultralytics
