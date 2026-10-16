@@ -10,3 +10,8 @@ snapshots/
 *.pt
 *.safetensors
 detecciones_alpr.json*
+# outputs/: se versiona solo el modelo (config), no las corridas ni los pesos
+outputs/*.json
+outputs/*.jsonl
+outputs/calibration/
+outputs/eval*/
