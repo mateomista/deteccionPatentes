@@ -698,6 +698,9 @@ class ALPRPipeline:
                      "validación: %s", s["records_consensus"], s["records_recovered"],
                      s["records_format_invalid"],
                      "ESTRICTA" if self.strict_plate else "PERMISIVA/DEBUG (no equivale a formato argentino)")
+        if self.export_dir:
+            logging.info("[MÉTRICAS][EXPORT] Recortes de vehículo exportados: %d de %d detecciones -> %s",
+                         s["vehicle_crops_exported"], len(self.json_log), self.export_dir)
         if s["rtdetr_forwards"]:
             logging.info("[MÉTRICAS][BATCH] Forwards RT-DETR: %d | crops/forward medio: %.2f | "
                          "backoffs OOM: %d | lote efectivo final: %d", s["rtdetr_forwards"],
