@@ -25,6 +25,7 @@ import re
 import cv2
 import numpy as np
 
+
 class CocoPlateDataset:
     """Dataset COCO de una clase. Devuelve lo que espera RTDetrForObjectDetection:
     `pixel_values` + `labels` (class_labels y boxes cxcywh normalizadas, que
@@ -139,6 +140,8 @@ def _load_base_model(base_model, model_cls):
     return model_cls.from_pretrained(
         base_model, id2label={0: "plate"}, label2id={"plate": 0},
         num_labels=1, ignore_mismatched_sizes=True)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     p.add_argument("--train-ann", required=True)
@@ -168,22 +171,16 @@ def main(argv=None):
     set_seed(args.seed)
     random.seed(args.seed)
 
-    print("[DIAG] cargando processor...", flush=True)
     processor = RTDetrImageProcessor.from_pretrained(args.base_model)
-    print("[DIAG] cargando modelo...", flush=True)
     model = _load_base_model(args.base_model, RTDetrForObjectDetection)
 
-    print("[DIAG] construyendo train_ds...", flush=True)
     train_ds = CocoPlateDataset(args.train_ann, args.train_images, processor, augment=args.augment)
-    print("[DIAG] construyendo val_ds...", flush=True)
     val_ds = CocoPlateDataset(args.val_ann, args.val_images, processor, augment=False)
     if args.max_train_images:
         train_ds.images = train_ds.images[:args.max_train_images]
-    print(f"[DIAG] datasets listos: train={len(train_ds)} val={len(val_ds)}", flush=True)
 
     # transformers renombró evaluation_strategy -> eval_strategy.
     sig = inspect.signature(TrainingArguments.__init__).parameters
-
     eval_key = "eval_strategy" if "eval_strategy" in sig else "evaluation_strategy"
     # transformers 5 quitó warmup_ratio: warmup_steps acepta un float en [0, 1) como proporción.
     warmup = {"warmup_ratio": 0.05} if "warmup_ratio" in sig else {"warmup_steps": 0.05}
@@ -214,13 +211,8 @@ def main(argv=None):
         **{eval_key: "epoch"},
     )
 
-    print("[DIAG] TrainingArguments listos, creando Trainer...", flush=True)
     trainer = Trainer(model=model, args=targs, train_dataset=train_ds, eval_dataset=val_ds,
                       data_collator=collate_fn)
-    print("[DIAG] Trainer creado, probando __getitem__ sobre 1 sample de train_ds...", flush=True)
-    sample = train_ds[0]
-    print("[DIAG] sample OK, pixel_values shape:", sample["pixel_values"].shape, flush=True)
-    print("[DIAG] arrancando trainer.train()...", flush=True)
     trainer.train()
 
     final_dir = os.path.join(args.output_dir, "final_model")
