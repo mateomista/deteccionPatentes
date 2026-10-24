@@ -20,10 +20,10 @@ import inspect
 import json
 import os
 import random
+import re
 
 import cv2
 import numpy as np
-
 
 class CocoPlateDataset:
     """Dataset COCO de una clase. Devuelve lo que espera RTDetrForObjectDetection:
@@ -52,7 +52,9 @@ class CocoPlateDataset:
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         h, w = img.shape[:2]
 
-        anns = [dict(bbox=list(a["bbox"]), category_id=int(a["category_id"]),
+        anns = [dict(bbox=list(a["bbox"]), category_id=0,  # una sola clase ("plate"); se ignora
+                     # el category_id real del COCO json (Roboflow suele numerar la clase real
+                     # desde 1, dejando 0 para un placeholder de supercategoria "none")
                      area=float(a.get("area", a["bbox"][2] * a["bbox"][3])), iscrowd=0)
                 for a in self.by_image.get(info["id"], [])]
 
@@ -80,6 +82,63 @@ def collate_fn(batch):
             "labels": [b["labels"] for b in batch]}
 
 
+def _remap_legacy_rtdetr_state_dict(state_dict):
+    """Traduce nombres de peso de un checkpoint de RT-DETR guardado con una
+    version mas vieja de `transformers` (donde el submodulo de auto-atencion
+    del encoder se llamaba "encoder.encoder" en vez de "encoder.aifi", y las
+    capas usaban "fc1"/"fc2" + "self_attn.out_proj" sueltos en vez de
+    "mlp.fc1"/"mlp.fc2" + "self_attn.o_proj") a los nombres que usa la version
+    instalada. Sin esto, from_pretrained() deja la carga "a medias": carga el
+    resto del modelo bien pero reinicializa al azar la auto-atencion del
+    encoder y las capas FFN/proyeccion de salida del decoder, sin mas aviso
+    que un log de "missing/unexpected keys" facil de pasar por alto -- y eso
+    tira a la basura buena parte de un fine-tuning anterior."""
+    new_state_dict = {}
+    for k, v in state_dict.items():
+        nk = k.replace("model.encoder.encoder.", "model.encoder.aifi.")
+        nk = nk.replace(".self_attn.out_proj.", ".self_attn.o_proj.")
+        nk = re.sub(r"(\.layers\.\d+)\.fc1\.", r"\1.mlp.fc1.", nk)
+        nk = re.sub(r"(\.layers\.\d+)\.fc2\.", r"\1.mlp.fc2.", nk)
+        new_state_dict[nk] = v
+    return new_state_dict
+
+
+def _load_legacy_checkpoint_state_dict(checkpoint_dir):
+    import torch
+    st_path = os.path.join(checkpoint_dir, "model.safetensors")
+    if os.path.exists(st_path):
+        from safetensors.torch import load_file
+        sd = load_file(st_path)
+    else:
+        sd = torch.load(os.path.join(checkpoint_dir, "pytorch_model.bin"), map_location="cpu")
+    return _remap_legacy_rtdetr_state_dict(sd)
+
+
+def _load_base_model(base_model, model_cls):
+    """Carga el modelo base evitando una reinicializacion innecesaria de la
+    cabeza de clasificacion, y remapeando nombres de clave legacy cuando el
+    checkpoint local viene de una version mas vieja de `transformers`."""
+    cfg_path = os.path.join(base_model, "config.json")
+    already_one_class = False
+    if os.path.isdir(base_model) and os.path.exists(cfg_path):
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            base_cfg = json.load(f)
+        already_one_class = len(base_cfg.get("id2label", {})) == 1
+
+    if already_one_class:
+        model = model_cls.from_pretrained(base_model)
+        legacy_sd = _load_legacy_checkpoint_state_dict(base_model)
+        missing, unexpected = model.load_state_dict(legacy_sd, strict=False)
+        if missing or unexpected:
+            print(f"[WARN] tras remapear claves legacy, quedan sin cargar: "
+                  f"{len(missing)} missing, {len(unexpected)} unexpected. "
+                  f"Primeras missing: {missing[:5]}", flush=True)
+        else:
+            print("[INFO] checkpoint legacy remapeado y cargado sin faltantes.", flush=True)
+        return model
+    return model_cls.from_pretrained(
+        base_model, id2label={0: "plate"}, label2id={"plate": 0},
+        num_labels=1, ignore_mismatched_sizes=True)
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     p.add_argument("--train-ann", required=True)
@@ -109,19 +168,22 @@ def main(argv=None):
     set_seed(args.seed)
     random.seed(args.seed)
 
+    print("[DIAG] cargando processor...", flush=True)
     processor = RTDetrImageProcessor.from_pretrained(args.base_model)
-    id2label = {0: "plate"}
-    model = RTDetrForObjectDetection.from_pretrained(
-        args.base_model, id2label=id2label, label2id={"plate": 0},
-        num_labels=1, ignore_mismatched_sizes=True)
+    print("[DIAG] cargando modelo...", flush=True)
+    model = _load_base_model(args.base_model, RTDetrForObjectDetection)
 
+    print("[DIAG] construyendo train_ds...", flush=True)
     train_ds = CocoPlateDataset(args.train_ann, args.train_images, processor, augment=args.augment)
+    print("[DIAG] construyendo val_ds...", flush=True)
     val_ds = CocoPlateDataset(args.val_ann, args.val_images, processor, augment=False)
     if args.max_train_images:
         train_ds.images = train_ds.images[:args.max_train_images]
+    print(f"[DIAG] datasets listos: train={len(train_ds)} val={len(val_ds)}", flush=True)
 
     # transformers renombró evaluation_strategy -> eval_strategy.
     sig = inspect.signature(TrainingArguments.__init__).parameters
+
     eval_key = "eval_strategy" if "eval_strategy" in sig else "evaluation_strategy"
     # transformers 5 quitó warmup_ratio: warmup_steps acepta un float en [0, 1) como proporción.
     warmup = {"warmup_ratio": 0.05} if "warmup_ratio" in sig else {"warmup_steps": 0.05}
@@ -152,8 +214,13 @@ def main(argv=None):
         **{eval_key: "epoch"},
     )
 
+    print("[DIAG] TrainingArguments listos, creando Trainer...", flush=True)
     trainer = Trainer(model=model, args=targs, train_dataset=train_ds, eval_dataset=val_ds,
                       data_collator=collate_fn)
+    print("[DIAG] Trainer creado, probando __getitem__ sobre 1 sample de train_ds...", flush=True)
+    sample = train_ds[0]
+    print("[DIAG] sample OK, pixel_values shape:", sample["pixel_values"].shape, flush=True)
+    print("[DIAG] arrancando trainer.train()...", flush=True)
     trainer.train()
 
     final_dir = os.path.join(args.output_dir, "final_model")
