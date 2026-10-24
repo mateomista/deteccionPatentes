@@ -18,3 +18,7 @@ outputs/eval*/
 # Clasificador de vehículos: recortes de entrada y pesos
 outputs/crops_vehiculos/
 weights/
+
+venv/
+outputs/
+snapshots_*/
