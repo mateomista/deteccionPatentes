@@ -151,3 +151,17 @@ def test_labels_son_compatibles_con_ocr_eval(crops_dir, tmp_path):
     rows = load_labels(str(out / "labels.csv"))
     assert rows[0]["image"] == "clip__F000083_ID3.jpg" and rows[0]["plate"] == "KDJ628"
     assert json.loads(json.dumps(rows))      # serializable, sin sorpresas
+
+
+def test_build_frena_si_faltan_archivos_y_no_escribe_nada(crops_dir, tmp_path, capsys):
+    v, out = tmp_path / "v.csv", tmp_path / "calib"
+    lc.main(["template", "--crops-dir", str(crops_dir), "--out", str(v)])
+    fill(v, {10: "AB953GI"})
+    (crops_dir / "ocr_ok" / "F000305_ID10_AG353GI.jpg").unlink()
+    with pytest.raises(SystemExit) as e:
+        lc.main(["build", "--crops-dir", str(crops_dir), "--vehicles", str(v), "--out-dir", str(out)])
+    assert "Faltan 1 archivos" in str(e.value)
+    assert not out.exists()
+    lc.main(["build", "--crops-dir", str(crops_dir), "--vehicles", str(v), "--out-dir", str(out),
+             "--allow-missing"])
+    assert [r["image"] for r in read_labels(out)] == ["clip__F000287_ID10.jpg"]

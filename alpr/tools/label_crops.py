@@ -113,15 +113,16 @@ def parse_frames(text):
     return out
 
 
-def build_labels(index, vehicle_rows_, crops_dir, out_dir, include_focus_mask=False):
-    """Copia los recortes etiquetados a `out_dir` y devuelve (filas de labels.csv, avisos, resumen)."""
+def build_labels(index, vehicle_rows_, crops_dir, include_focus_mask=False):
+    """Decide qué recortes se etiquetan, SIN tocar el disco. Devuelve (filas de labels.csv,
+    copias [(origen, nombre)], avisos, resumen)."""
     kinds = OCR_KINDS + (("focus_mask",) if include_focus_mask else ())
     by_vehicle = defaultdict(list)
     for it in index["recortes"]:
         if it["tipo"] in kinds:
             by_vehicle[it["id_vehiculo"]].append(it)
     video = index.get("video", "video")
-    rows, warnings, summary = [], [], []
+    rows, copies, warnings, summary = [], [], [], []
     for r in vehicle_rows_:
         try:
             tid = int(r["id_vehiculo"])
@@ -148,12 +149,11 @@ def build_labels(index, vehicle_rows_, crops_dir, out_dir, include_focus_mask=Fa
             if not os.path.exists(src):
                 warnings.append(f"#{tid}: falta el archivo {it['archivo']}")
                 continue
-            os.makedirs(out_dir, exist_ok=True)
-            shutil.copyfile(src, os.path.join(out_dir, name))
+            copies.append((src, name))
             rows.append({"image": name, "plate": plate, "vehicle_class": it.get("tipo_vehiculo") or ""})
             kept += 1
         summary.append((tid, plate, kept, len(items) - kept))
-    return rows, warnings, summary
+    return rows, copies, warnings, summary
 
 
 def merge_labels(path, new_rows):
@@ -192,12 +192,21 @@ def cmd_template(args):
 def cmd_build(args):
     index = load_index(args.crops_dir)
     vehicles = _read_csv(args.vehicles)
-    rows, warnings, summary = build_labels(index, vehicles, args.crops_dir, args.out_dir,
-                                           args.include_focus_mask)
+    rows, copies, warnings, summary = build_labels(index, vehicles, args.crops_dir,
+                                                   args.include_focus_mask)
     for w in warnings:
         print(f"[AVISO] {w}", file=sys.stderr)
+    missing = [w for w in warnings if "falta el archivo" in w]
+    if missing and not args.allow_missing:
+        raise SystemExit(f"Faltan {len(missing)} archivos de recortes: no se escribió nada, porque "
+                         f"etiquetar solo una parte de un vehículo da un conjunto sesgado. Revisá que "
+                         f"{args.crops_dir} sea la carpeta de la misma corrida que el índice "
+                         f"(o usá --allow-missing).")
     if not rows:
         raise SystemExit("No se etiquetó ningún recorte: completá la columna `plate` en el CSV de vehículos")
+    os.makedirs(args.out_dir, exist_ok=True)
+    for src, name in copies:
+        shutil.copyfile(src, os.path.join(args.out_dir, name))
     total = merge_labels(os.path.join(args.out_dir, "labels.csv"), rows)
     for tid, plate, kept, skipped in summary:
         print(f"  #{tid}: {plate}  {kept} recortes" + (f" ({skipped} excluidos)" if skipped else ""))
@@ -219,6 +228,8 @@ def main(argv=None):
     b.add_argument("--crops-dir", required=True)
     b.add_argument("--vehicles", required=True)
     b.add_argument("--out-dir", required=True)
+    b.add_argument("--allow-missing", action="store_true",
+                   help="Sigue aunque falten archivos de recortes (por defecto frena sin escribir nada)")
     b.add_argument("--include-focus-mask", action="store_true",
                    help="Incluye también los recortes que descartó el focus mask")
     b.set_defaults(func=cmd_build)
