@@ -138,6 +138,28 @@ no encontró patente, para ver si había una. `indice.json` trae lo que leyó el
 un OCR flojo de un recorte mal hecho o de una patente que el detector no vio. Está apagado por defecto, no cambia las
 detecciones (lo verifican las pruebas) y no se usa en modo de grabación.
 
+### Etiquetar los recortes para medir el OCR
+
+Con los recortes de `--export-plate-crops` y la patente REAL de cada vehículo se arma el conjunto etiquetado que usa
+`alpr.evaluate.ocr_eval` (el A/B del OCR sobre los mismos recortes):
+
+```bash
+python -m alpr.tools.label_crops template --crops-dir outputs/crops_patente --out outputs/crops_patente/vehiculos.csv
+```
+
+Completá la columna `plate` de `vehiculos.csv` (vacía si no se lee) mirando el video o `imagen_ejemplo`. La plantilla no
+muestra lo que leyó el OCR para no condicionar al que etiqueta. En `excluir_frames` van los cuadros cuyo recorte no se
+puede leer (patente cortada); los separás con coma. Acepta CSV con coma o con punto y coma (Excel en español).
+
+```bash
+python -m alpr.tools.label_crops build --crops-dir outputs/crops_patente --vehicles outputs/crops_patente/vehiculos.csv --out-dir data/ocr_calib
+python -m alpr.evaluate.ocr_eval --labels data/ocr_calib/labels.csv --crops-dir data/ocr_calib --strict-plate
+```
+
+Cada recorte hereda la patente de su vehículo. `build` se puede repetir con otros videos: suma a `labels.csv` sin
+duplicar. Ojo: los recortes de un mismo vehículo son casi el mismo dato; para citar una exactitud hay que repartir por
+vehículo o por video entre calibración y prueba, nunca por recorte.
+
 ### Lecturas distintas de una misma patente (opcional)
 
 Dos opciones, **apagadas por defecto**, para cuando el OCR cambia un carácter de un cuadro al otro:
