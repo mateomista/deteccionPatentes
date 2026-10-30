@@ -124,6 +124,20 @@ python -m pytest tests/classify -q
 con autorización del equipo). El clasificador real usa `torch` y `transformers` (Apache-2.0); **no usa
 Ultralytics**, que es AGPL-3.0 (ver `docs/LICENCIAS.md`).
 
+### Revisar a ojo los recortes de patente
+
+Para ver qué recibió el OCR (y qué no), el pipeline guarda cada recorte de patente según su resultado:
+
+```bash
+python -m alpr.inference --source clip.mp4 --plate-model outputs/final_model --strict-plate --export-plate-crops outputs/crops_patente
+```
+
+Abrí `outputs/crops_patente/indice.html` con el navegador: una hoja por vehículo, con el color de cada recorte según
+qué pasó (`ocr_ok`, `ocr_sin_lectura`, `focus_mask`) y, en `sin_patente_vehiculo`, el vehículo entero cuando RT-DETR
+no encontró patente, para ver si había una. `indice.json` trae lo que leyó el OCR en cada intento. Sirve para distinguir
+un OCR flojo de un recorte mal hecho o de una patente que el detector no vio. Está apagado por defecto, no cambia las
+detecciones (lo verifican las pruebas) y no se usa en modo de grabación.
+
 ### Contrato con el pipeline (productor)
 
 El pipeline puede exportar el recorte del vehículo de cada patente registrada, listo para el clasificador:

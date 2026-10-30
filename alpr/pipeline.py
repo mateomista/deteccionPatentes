@@ -24,6 +24,7 @@ import supervision as sv
 import torch
 
 from .contracts import sanitize_video_stem, vehicle_crop_filename, write_image_atomic
+from .plate_crops import PlateCropExporter
 from .config import (
     CONSENSUS_REASON, MIN_VEHICLE_CROP_HEIGHT, MIN_VEHICLE_CROP_WIDTH,
     OCR_INTERVAL_FRAMES, OCR_VARIANT_BASE, OCR_VARIANT_ORDER, OCR_ZONE_START_RATIO,
@@ -459,12 +460,17 @@ class ALPRPipeline:
     # --------------------------------------------------------------------------
     # FASE B: forwards batcheados + OCR por job
     # --------------------------------------------------------------------------
+    def _export_plate_crop(self, kind, frame_idx, track_id, image, vehicle_class, **extra):
+        if self.plate_exporter is not None:
+            self.plate_exporter.add(kind, frame_idx, track_id, image, vehicle_class, **extra)
+
     def _consume_job(self, job, box_p, frame_idx):
         """Después del forward: clamp del box, recorte de chapa, focus mask de
         chapa, OCR adaptativo y UN voto como máximo ([OCR-ADAPT #4])."""
         tid = job.track.track_id
         if box_p is None:
             self._note_discard(frame_idx, tid, "rtdetr_sin_patente", tipo_vehiculo=job.vehicle_class)
+            self._export_plate_crop("sin_patente_vehiculo", frame_idx, tid, job.crop, job.vehicle_class)
             return
         vehicle_crop = job.crop
         ch, cw = vehicle_crop.shape[:2]
@@ -486,6 +492,8 @@ class ALPRPipeline:
                 self.stats["focus_mask_rejections"][reason] += 1
                 self._note_discard(frame_idx, tid, "focus_mask", crop=plate_crop,
                                    detalle=reason, tipo_vehiculo=job.vehicle_class)
+                self._export_plate_crop("focus_mask", frame_idx, tid, plate_crop, job.vehicle_class,
+                                        detail=reason)
                 return
 
         self.stats["plate_crops_to_ocr"] += 1
@@ -494,8 +502,12 @@ class ALPRPipeline:
             self._note_discard(frame_idx, tid, "ocr_sin_lectura_valida", crop=plate_crop,
                                tipo_vehiculo=job.vehicle_class,
                                intentos=list(self.ocr.last_attempts))
+            self._export_plate_crop("ocr_sin_lectura", frame_idx, tid, plate_crop, job.vehicle_class,
+                                    attempts=list(self.ocr.last_attempts))
             return
         text, conf, processed = result
+        self._export_plate_crop("ocr_ok", frame_idx, tid, plate_crop, job.vehicle_class, text=text,
+                                conf=conf, attempts=list(self.ocr.last_attempts))
         self._cast_vote(job.track, text, float(conf), frame_idx, plate_crop, processed, job.bbox,
                         vehicle_crop=job.crop if self.export_dir else None)
         self._try_finalize(job.track)
@@ -580,6 +592,9 @@ class ALPRPipeline:
         self._reset_state()
         self._init_video(source)
         self.video_stem = sanitize_video_stem(os.path.splitext(os.path.basename(source))[0])
+        self.plate_exporter = None
+        if self.options.export_plate_dir and not self.record:
+            self.plate_exporter = PlateCropExporter(self.options.export_plate_dir, self.video_stem)
 
         if output_json:
             d = os.path.dirname(output_json)
@@ -602,6 +617,11 @@ class ALPRPipeline:
             if self._jsonl_handle is not None:
                 self._jsonl_handle.close()
                 self._jsonl_handle = None
+
+        if self.plate_exporter is not None:
+            counts = self.plate_exporter.finish()
+            logging.info("[salida] recortes de patente -> %s (%s)", self.options.export_plate_dir,
+                         ", ".join(f"{k}={v}" for k, v in counts.items()))
 
         problems = audit_records(self.json_log, self.strict_plate)
         self.stats["export_audit_violations"] = len(problems)

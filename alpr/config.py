@@ -276,3 +276,6 @@ class PipelineOptions:
     # Carpeta donde exportar el recorte del vehículo de cada patente registrada (contrato con
     # alpr.classify, ver alpr/contracts.py). None = no exportar (comportamiento original).
     export_vehicle_dir: Optional[str] = None
+    # Carpeta donde guardar cada recorte de patente con su resultado (ver alpr/plate_crops.py).
+    # None = no exportar. No se usa en modo de grabación.
+    export_plate_dir: Optional[str] = None
