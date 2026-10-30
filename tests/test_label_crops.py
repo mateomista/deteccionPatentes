@@ -34,9 +34,13 @@ def test_plantilla_tiene_un_vehiculo_por_fila_y_no_muestra_lo_que_leyo_el_ocr(cr
     rows = list(csv.DictReader(text.splitlines()))
     assert [r["id_vehiculo"] for r in rows] == ["3", "10", "11"]      # el #13 solo tiene focus mask
     assert rows[1]["recortes_ocr"] == "2" and rows[1]["cuadros"] == "287-305"
-    assert rows[1]["imagen_ejemplo"] == "ocr_ok/F000305_ID10_AG353GI.jpg"   # el recorte más grande
+    assert rows[1]["imagen_ejemplo"] == "muestras/ID10_F000305.jpg"          # el recorte más grande
     assert all(r["plate"] == "" for r in rows)
     assert "lecturas_ocr" not in rows[0]
+    assert "AG353GI" not in text and "KDJ628" not in text                       # nada de lo que leyó el OCR
+    samples = sorted(p.name for p in (tmp_path / "muestras").iterdir())
+    assert samples == ["ID10_F000305.jpg", "ID11_F000306.jpg", "ID3_F000083.jpg"]
+    assert not any("KDJ" in n or "AG" in n for n in samples)
 
 
 def test_plantilla_con_lecturas_si_se_pide(crops_dir, tmp_path):

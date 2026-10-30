@@ -148,7 +148,8 @@ python -m alpr.tools.label_crops template --crops-dir outputs/crops_patente --ou
 ```
 
 Completá la columna `plate` de `vehiculos.csv` (vacía si no se lee) mirando el video o `imagen_ejemplo`. La plantilla no
-muestra lo que leyó el OCR para no condicionar al que etiqueta. En `excluir_frames` van los cuadros cuyo recorte no se
+muestra lo que leyó el OCR para no condicionar al que etiqueta: el recorte de ejemplo de cada vehículo se copia a
+`muestras/` con un nombre neutro, porque los archivos originales llevan la lectura en el nombre. En `excluir_frames` van los cuadros cuyo recorte no se
 puede leer (patente cortada); los separás con coma. Acepta CSV con coma o con punto y coma (Excel en español).
 
 ```bash
