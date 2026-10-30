@@ -124,6 +124,27 @@ python -m pytest tests/classify -q
 con autorización del equipo). El clasificador real usa `torch` y `transformers` (Apache-2.0); **no usa
 Ultralytics**, que es AGPL-3.0 (ver `docs/LICENCIAS.md`).
 
+### Lecturas distintas de una misma patente (opcional)
+
+Dos opciones, **apagadas por defecto**, para cuando el OCR cambia un carácter de un cuadro al otro:
+
+```bash
+python -m alpr.inference --source clip.mp4 --strict-plate --char-voting --dedup-max-distance 1
+```
+
+- `--char-voting`: el consenso se arma carácter por carácter entre las lecturas del vehículo, en vez de exigir
+  lecturas idénticas. Hacen falta al menos 3 lecturas a no más de 2 caracteres del texto fusionado; con menos, se usa el
+  voto por texto entero. **No adelanta el consenso:** solo decide la patente cuando el track se recupera sin consenso
+  (pérdida del track o fin del video). `cantidad_votos` cuenta las lecturas que respaldan el texto fusionado, no las
+  que coinciden exactamente.
+- `--dedup-max-distance N` (0, 1 o 2): dos patentes que difieren en a lo sumo N caracteres dentro de `--dedup-seconds`
+  cuentan como el mismo vehículo; se conserva el primero que se registra. Riesgo: dos vehículos distintos con patentes
+  casi iguales dentro de la ventana se fusionan y se pierde uno.
+
+Con las dos apagadas el resultado es idéntico al de antes (lo verifican las pruebas). Las dos también están en
+`python -m alpr.calibrate sweep`, que las evalúa sobre las observaciones grabadas sin correr modelos. Que ayuden o no es
+una pregunta para el ground truth: hasta medirla no hay que activarlas en producción.
+
 ### Contrato con el pipeline (productor)
 
 El pipeline puede exportar el recorte del vehículo de cada patente registrada, listo para el clasificador:

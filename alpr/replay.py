@@ -21,7 +21,8 @@ from .finalize import OUTCOME_OK, prepare_record
 from .tracking import TrackState, VehicleTrack
 
 
-def replay_video(obs, th, flush_unfinalized=True, dedup_seconds=30.0):
+def replay_video(obs, th, flush_unfinalized=True, dedup_seconds=30.0, dedup_max_distance=0,
+                 char_voting=False):
     """Devuelve la lista de registros de detección que el pipeline habría
     producido sobre `obs` con los umbrales `th`."""
     fps = obs["fps"]
@@ -31,7 +32,7 @@ def replay_video(obs, th, flush_unfinalized=True, dedup_seconds=30.0):
     events = []   # (frame de disparo, track_id, track, razón)
     for tid_str, t in obs["tracks"].items():
         tid = int(tid_str)
-        track = VehicleTrack(tid, t["vehicle_class"])
+        track = VehicleTrack(tid, t["vehicle_class"], char_voting=char_voting)
         track.state = TrackState.OCR_ACTIVE
         finalized = False
         for v in t["votes"]:
@@ -60,7 +61,7 @@ def replay_video(obs, th, flush_unfinalized=True, dedup_seconds=30.0):
         track.state = TrackState.FINALIZED
         record, outcome, _ = prepare_record(
             track, reason, fps, strict, recent_plates, dedup_seconds,
-            snapshot_writer=None, require_crop=False)
+            snapshot_writer=None, require_crop=False, dedup_max_distance=dedup_max_distance)
         if outcome == OUTCOME_OK:
             records.append(record)
     return records

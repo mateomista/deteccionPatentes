@@ -262,6 +262,11 @@ class PipelineOptions:
     snapshots_dir: Optional[str] = "snapshots"   # None = no escribir snapshots
     max_frames: int = 0                          # 0 = video completo
     dedup_seconds: float = 30.0
+    # Deduplicación aproximada: dos patentes que difieren en a lo sumo estos caracteres, dentro de
+    # `dedup_seconds`, cuentan como la misma. 0 = solo coincidencia exacta (comportamiento original).
+    dedup_max_distance: int = 0
+    # Consenso carácter por carácter entre las lecturas de un track (ver alpr/tracking.py).
+    char_voting: bool = False
     fp16: bool = True
     dual_ocr: bool = True                        # variantes de rescate del OCR
     ocr_max_attempts: int = OCR_MAX_ATTEMPTS

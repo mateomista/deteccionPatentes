@@ -270,7 +270,8 @@ class ALPRPipeline:
         record, outcome, detail = prepare_record(
             v_track, reason, self.video_info.fps, self.strict_plate,
             self.recent_plates, self.options.dedup_seconds,
-            snapshot_writer=self._snapshot_writer)
+            snapshot_writer=self._snapshot_writer,
+            dedup_max_distance=self.options.dedup_max_distance)
 
         if outcome == OUTCOME_DUPLICATE:
             self._track_outcome[int(v_track.track_id)] = "duplicada"
@@ -402,7 +403,8 @@ class ALPRPipeline:
     # --------------------------------------------------------------------------
     def _get_or_create_track(self, track_id, vehicle_class_name):
         if track_id not in self.tracks:
-            self.tracks[track_id] = VehicleTrack(track_id, vehicle_class_name)
+            self.tracks[track_id] = VehicleTrack(track_id, vehicle_class_name,
+                                                 char_voting=self.options.char_voting)
         return self.tracks[track_id]
 
     def _maybe_activate_ocr(self, v_track, bbox_int):

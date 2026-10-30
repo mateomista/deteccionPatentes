@@ -2,7 +2,13 @@
 from collections import defaultdict
 from enum import Enum
 
-from .plate_text import matches_official_format
+from .plate_text import fuse_plate_reads, matches_official_format, plate_distance
+
+# Voto por caracteres: una lectura respalda al texto fusionado si difiere en a lo sumo este número
+# de posiciones (con el mismo largo), y hacen falta al menos FUSION_MIN_READS lecturas así: con
+# dos lecturas distintas "fusionar" es elegir la más confiable, y no es un consenso.
+FUSION_MAX_DISTANCE = 2
+FUSION_MIN_READS = 3
 
 
 class TrackState(Enum):
@@ -25,8 +31,9 @@ class PlateEvidence:
 
 class VehicleTrack:
     """Centraliza todo el estado y la evidencia asociada a un track_id."""
-    def __init__(self, track_id, vehicle_class_name):
+    def __init__(self, track_id, vehicle_class_name, char_voting=False):
         self.track_id = track_id
+        self.char_voting = bool(char_voting)
         self.vehicle_class_name = vehicle_class_name
         self.state = TrackState.NEW
         self.last_seen_frame = -1
@@ -53,26 +60,68 @@ class VehicleTrack:
             ev.bbox = vehicle_bbox.copy() if vehicle_bbox is not None else None
             ev.vehicle_crop = vehicle_crop.copy() if vehicle_crop is not None else None
 
-    def get_consensus_plate(self):
-        """Patente ganadora por sumatoria total de confianza."""
+    def get_consensus_plate(self, fuse=None):
+        """Patente ganadora: por sumatoria de confianza del texto entero o, con `char_voting`, por
+        voto carácter por carácter entre las lecturas del track. Devuelve (texto, confianza media,
+        cantidad de lecturas que la respaldan). `fuse` fuerza (True) o impide (False) el voto por
+        caracteres; por defecto lo decide `char_voting`."""
+        return self._consensus(self.char_voting if fuse is None else fuse)[:3]
+
+    def _consensus(self, fuse):
+        """(texto, confianza media, lecturas, fusionado): `fusionado` es True si el ganador salió del
+        voto por caracteres."""
         if not self.votes:
-            return None, 0.0, 0
+            return None, 0.0, 0, False
+        if fuse and len(self.votes) > 1:
+            fused = self._fused_consensus()
+            if fused is not None:
+                return (*fused, True)
         best_plate = max(self.votes, key=self.votes.get)
         count = self.vote_counts[best_plate]
-        avg_conf = self.votes[best_plate] / count
-        return best_plate, avg_conf, count
+        return best_plate, self.votes[best_plate] / count, count, False
+
+    def _fused_consensus(self):
+        """Consenso por caracteres, o None si no corresponde (se usa el voto por texto entero).
+
+        No corresponde si el texto fusionado rompe el formato oficial que sí cumple el ganador por
+        texto entero: un texto armado de partes no debe ser peor que una lectura real."""
+        fused = fuse_plate_reads(self.votes)
+        by_text = max(self.votes, key=self.votes.get)
+        if fused is None or (matches_official_format(by_text) and not matches_official_format(fused)):
+            return None
+        near = [t for t in self.votes
+                if len(t) == len(fused) and plate_distance(t, fused) <= FUSION_MAX_DISTANCE]
+        if not near:
+            return None
+        count = sum(self.vote_counts[t] for t in near)
+        if count < FUSION_MIN_READS:
+            return None
+        avg_conf = sum(self.votes[t] for t in near) / count
+        if fused not in self.votes:
+            # La evidencia de un texto armado es la de su lectura más parecida y más confiable.
+            src = min(near, key=lambda t: (plate_distance(t, fused), -self.evidence[t].best_conf))
+            ev = PlateEvidence()
+            ev.__dict__.update(self.evidence[src].__dict__)
+            ev.text = fused
+            self.evidence[fused] = ev
+        return fused, avg_conf, count
 
     def check_finalization(self, th):
-        """`th`: Thresholds. Los umbrales llegan por parámetro (no globales)."""
+        """`th`: Thresholds. Los umbrales llegan por parámetro (no globales).
+
+        Finaliza por consenso solo con lecturas IDÉNTICAS: el voto por caracteres no adelanta la
+        decisión (con pocas lecturas puede elegir mal), solo participa cuando el track se recupera
+        sin consenso (`flush_eligible`)."""
         if self.state == TrackState.FINALIZED:
             return True
-        best_plate, avg_conf, count = self.get_consensus_plate()
+        best_plate, avg_conf, count, fused = self._consensus(False)
         if not best_plate:
             return False
 
-        best_score = self.votes[best_plate]
+        # El margen compara textos enteros: con el voto por caracteres no aplica.
         margin = 1.0
-        if len(self.votes) > 1:
+        if not fused and len(self.votes) > 1:
+            best_score = self.votes[best_plate]
             sorted_plates = sorted(self.votes.keys(), key=self.votes.get, reverse=True)
             second_score = self.votes[sorted_plates[1]]
             margin = (best_score - second_score) / best_score if best_score > 0 else 0.0
