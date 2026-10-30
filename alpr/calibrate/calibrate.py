@@ -144,7 +144,9 @@ def cmd_sweep(args):
         for combo in iter_grid(grid):
             th = Thresholds(confidence_vehicle=cv, confidence_plate=cp, **combo)
             preds = {v: replay_video(o, th, flush_unfinalized=not args.no_flush,
-                                     dedup_seconds=args.dedup_seconds)
+                                     dedup_seconds=args.dedup_seconds,
+                                     dedup_max_distance=args.dedup_max_distance,
+                                     char_voting=args.char_voting)
                      for v, o in obs_by_video.items()}
             m = evaluate_predictions(gt_sub, preds, args.tolerance_frames)
             rows.append({**th.to_dict(),
@@ -213,6 +215,8 @@ def main(argv=None):
     s.add_argument("--min-precision", type=float, default=0.95)
     s.add_argument("--tolerance-frames", type=int, default=0)
     s.add_argument("--dedup-seconds", type=float, default=30.0)
+    s.add_argument("--dedup-max-distance", type=int, choices=(0, 1, 2), default=0)
+    s.add_argument("--char-voting", action="store_true", help="Consenso carácter por carácter")
     s.add_argument("--no-flush", action="store_true", help="Sin recuperación de tracks sin consenso")
     s.set_defaults(func=cmd_sweep)
 

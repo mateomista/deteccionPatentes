@@ -36,6 +36,13 @@ def add_pipeline_args(p):
                    default=FLUSH_UNFINALIZED_DEFAULT)
     p.add_argument("--cudnn-benchmark", action="store_true")
     p.add_argument("--dedup-seconds", type=float, default=30.0)
+    p.add_argument("--dedup-max-distance", type=int, choices=(0, 1, 2), default=0,
+                   help="Deduplicación aproximada: patentes que difieren en a lo sumo N caracteres "
+                        "dentro de --dedup-seconds cuentan como la misma. 0 = solo exacta (por defecto). "
+                        "Riesgo: puede fusionar dos vehículos con patentes casi iguales")
+    p.add_argument("--char-voting", action="store_true",
+                   help="Consenso carácter por carácter entre las lecturas de cada vehículo, en vez "
+                        "de exigir lecturas idénticas. Por defecto apagado: evaluar con ground truth")
     p.add_argument("--max-frames", type=int, default=0, help="0 = video completo")
 
 
@@ -57,7 +64,8 @@ def options_from_args(args, snapshots_dir="snapshots", debug_crops=False, export
                      export_plate_dir=None):
     return PipelineOptions(
         plate_model=args.plate_model, snapshots_dir=snapshots_dir, max_frames=args.max_frames,
-        dedup_seconds=args.dedup_seconds, fp16=args.fp16, dual_ocr=args.dual_ocr,
+        dedup_seconds=args.dedup_seconds, dedup_max_distance=getattr(args, "dedup_max_distance", 0),
+        char_voting=getattr(args, "char_voting", False), fp16=args.fp16, dual_ocr=args.dual_ocr,
         ocr_max_attempts=args.ocr_max_attempts, disable_focus_mask=args.disable_focus_mask,
         debug_crops=debug_crops, rtdetr_batch=args.rtdetr_batch,
         sequential_rtdetr=args.sequential_rtdetr, strict_plate=args.strict_plate,

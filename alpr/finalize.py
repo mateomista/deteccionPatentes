@@ -9,7 +9,7 @@ import logging
 import os
 
 from .config import EXPORT_FIELDS, FINALIZATION_REASONS
-from .plate_text import is_valid_plate, matches_official_format
+from .plate_text import is_valid_plate, matches_official_format, plate_distance
 
 OUTCOME_OK = "ok"
 OUTCOME_DUPLICATE = "duplicate"
@@ -33,13 +33,34 @@ def evidence_problem(ev, plate, require_crop=True):
     return None
 
 
+def find_recent_duplicate(recent_plates, plate, timestamp, dedup_seconds, max_distance=0):
+    """(patente_vista, timestamp_visto) si `plate` ya se registró dentro de la ventana, o None.
+
+    Coincidencia exacta primero. Con `max_distance` > 0 también cuenta como la misma patente una
+    que difiere en a lo sumo esa cantidad de caracteres (el OCR confunde un carácter entre
+    cuadros): se elige la más parecida y, a igual distancia, la vista más recientemente. Riesgo: dos vehículos distintos con patentes casi
+    iguales dentro de la ventana se fusionan; por eso es opcional y por defecto está apagado."""
+    last_seen = recent_plates.get(plate)
+    if last_seen is not None and (timestamp - last_seen) <= dedup_seconds:
+        return plate, last_seen
+    if max_distance > 0:
+        close = [(plate_distance(other, plate), -seen, other) for other, seen in recent_plates.items()
+                 if other != plate and (timestamp - seen) <= dedup_seconds
+                 and plate_distance(other, plate) <= max_distance]
+        if close:
+            _, neg_seen, other = min(close)
+            return other, -neg_seen
+    return None
+
+
 def prepare_record(track, reason, fps, strict, recent_plates, dedup_seconds,
-                   snapshot_writer=None, require_crop=True):
+                   snapshot_writer=None, require_crop=True, dedup_max_distance=0):
     """Valida un track y arma su registro de exportación.
 
     Devuelve (record | None, outcome, detail). `outcome` es OUTCOME_OK,
     OUTCOME_DUPLICATE u OUTCOME_REJECTED; `detail` explica el rechazo.
-    Muta `recent_plates` (deduplicación de tracks re-identificados).
+    Muta `recent_plates` (deduplicación de tracks re-identificados). `dedup_max_distance` > 0 activa
+    la deduplicación aproximada (ver `find_recent_duplicate`).
     `snapshot_writer(plate, track_id, frame, crop, processed) -> path | None`.
     """
     best_plate, avg_conf, count = track.get_consensus_plate()
@@ -61,10 +82,15 @@ def prepare_record(track, reason, fps, strict, recent_plates, dedup_seconds,
     # Deduplicación: si ByteTrack pierde y recupera el mismo vehículo aparecen
     # dos IDs con la misma patente.
     if dedup_seconds > 0:
-        last_seen = recent_plates.get(best_plate)
-        if last_seen is not None and (timestamp - last_seen) <= dedup_seconds:
-            recent_plates[best_plate] = timestamp
-            return None, OUTCOME_DUPLICATE, f"visto hace {timestamp - last_seen:.1f}s"
+        match = find_recent_duplicate(recent_plates, best_plate, timestamp, dedup_seconds,
+                                      dedup_max_distance)
+        if match is not None:
+            seen_plate, last_seen = match
+            recent_plates[seen_plate] = timestamp
+            detail = f"visto hace {timestamp - last_seen:.1f}s"
+            if seen_plate != best_plate:
+                detail += f" como {seen_plate} (distancia {plate_distance(seen_plate, best_plate)})"
+            return None, OUTCOME_DUPLICATE, detail
     recent_plates[best_plate] = timestamp
 
     snap_path = None

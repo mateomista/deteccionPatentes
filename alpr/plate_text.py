@@ -175,3 +175,42 @@ def select_ocr_result(ocr_results):
         if any(r is best_frag for r in line):
             return build([line])
     return best_frag
+
+
+def plate_distance(a, b):
+    """Distancia de edición (Levenshtein) entre dos textos de patente."""
+    if a == b:
+        return 0
+    if not a or not b:
+        return max(len(a or ""), len(b or ""))
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def fuse_plate_reads(reads):
+    """Fusiona lecturas de UNA misma patente carácter por carácter.
+
+    `reads`: {texto: confianza acumulada}. Se queda con el largo que más confianza suma y, en cada
+    posición, con el carácter que más confianza suma (empate: orden alfabético, para que sea
+    determinista). Devuelve el texto fusionado o None si no hay lecturas. El texto fusionado puede
+    no coincidir con ninguna lectura: es justamente el caso en que dos lecturas fallan en
+    posiciones distintas."""
+    if not reads:
+        return None
+    by_len = {}
+    for text, w in reads.items():
+        by_len[len(text)] = by_len.get(len(text), 0.0) + w
+    length = max(by_len, key=lambda n: (by_len[n], n))
+    group = {t: w for t, w in reads.items() if len(t) == length}
+    fused = []
+    for pos in range(length):
+        score = {}
+        for text, w in group.items():
+            score[text[pos]] = score.get(text[pos], 0.0) + w
+        fused.append(min(score, key=lambda c: (-score[c], c)))
+    return "".join(fused)
