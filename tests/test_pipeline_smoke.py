@@ -5,6 +5,7 @@ zona de lectura, con RF-DETR, RT-DETR y EasyOCR reemplazados por dobles. Verific
 la máquina de estados, el reinicio entre videos y, sobre todo, que el REPLAY
 offline reproduzca lo que decide la corrida real (la premisa de la calibración).
 """
+from pathlib import Path
 from types import SimpleNamespace
 
 import cv2
@@ -236,3 +237,18 @@ def test_producer_to_consumer_end_to_end(tmp_path, video):
 def test_recorded_observations_include_the_frame_size(tmp_path, video):
     rec, _ = build(tmp_path, record=True)
     assert rec.run_video(video).observations["frame_size"] == [W, H]
+
+
+def test_pipeline_writes_snapshots_in_unicode_dir(tmp_path, video):
+    snap_dir = tmp_path / "Snapshots ñandú con tilde"
+    pipe, _ = build(tmp_path, snapshots_dir=str(snap_dir), debug_crops=True)
+    res = pipe.run_video(video)
+    assert len(res.detections) >= 1
+    snap_path = res.detections[0]["snapshot_path"]
+    assert snap_path is not None
+    assert Path(snap_path).exists()
+    assert (snap_dir / "debug").exists()
+    from alpr.contracts import read_image
+    loaded = read_image(snap_path)
+    assert loaded is not None
+    assert loaded.size > 0

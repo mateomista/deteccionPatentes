@@ -23,8 +23,16 @@ from alpr.classify.results import ClassificationResult, JsonlWriter
 
 # ------------------------------------------------------------------ utilidades
 def make_image(path, seed=0):
+    p = Path(path)
     rng = np.random.default_rng(seed)
-    cv2.imwrite(str(path), rng.integers(0, 255, (40, 60, 3), dtype=np.uint8))
+    img = rng.integers(0, 255, (40, 60, 3), dtype=np.uint8)
+    ext = p.suffix.lower() or ".jpg"
+    ok, buf = cv2.imencode(ext, img)
+    if not ok:
+        raise RuntimeError(f"Fallo al codificar imagen de prueba: {path}")
+    p.write_bytes(buf.tobytes())
+    if not p.is_file():
+        raise RuntimeError(f"El archivo de imagen no fue creado: {p}")
     return path
 
 
