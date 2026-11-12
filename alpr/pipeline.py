@@ -78,8 +78,10 @@ class ALPRPipeline:
             os.makedirs(self.export_dir, exist_ok=True)
         self.video_stem = "video"
         self.discard_dir = None
+        self.vehicle_evidence_dir = None
         if self.options.snapshots_dir:
             os.makedirs(self.options.snapshots_dir, exist_ok=True)
+            self.vehicle_evidence_dir = os.path.join(self.options.snapshots_dir, "vehiculos")
             if self.options.debug_crops:
                 self.debug_dir = os.path.join(self.options.snapshots_dir, "debug")
                 os.makedirs(self.debug_dir, exist_ok=True)
@@ -104,6 +106,7 @@ class ALPRPipeline:
         self.stats.clear()
         self.stats.update({
             "vehicle_crops_skipped": 0,   # descartados antes de RT-DETR
+            "vehicle_crops_too_small": 0,
             "plate_crops_total": 0,       # crops de chapa producidos por RT-DETR
             "plate_crops_skipped": 0,     # descartados por el focus mask
             "plate_crops_to_ocr": 0,      # llegaron al OCR
@@ -252,14 +255,54 @@ class ALPRPipeline:
             return None
         name = snapshot_name(plate, track_id, frame)
         path = os.path.join(self.options.snapshots_dir, name)
-        if not cv2.imwrite(path, crop):
-            logging.warning(f"[export] No se pudo escribir el snapshot: {path}")
+        try:
+            write_image_atomic(path, crop)
+        except Exception as exc:
+            logging.warning(f"[export] No se pudo escribir el snapshot {path}: {exc}")
             return None
         # [MEJORA-v3 #11] natural vs. lo que vio el OCR (figuras de tesis / diagnóstico).
         if self.debug_dir and processed is not None and processed.size > 0:
-            cv2.imwrite(os.path.join(
-                self.debug_dir, f"{plate}_ID{track_id}_F{frame}_ocr.png"), processed)
+            dbg_name = f"{plate}_ID{track_id}_F{frame}_ocr.png"
+            dbg_path = os.path.join(self.debug_dir, dbg_name)
+            try:
+                write_image_atomic(dbg_path, processed)
+            except Exception as exc:
+                logging.debug(f"[export] No se pudo escribir el snapshot de diagnóstico {dbg_path}: {exc}")
         return path
+
+    def _save_vehicle_evidence(self, v_track):
+        """Guarda la evidencia representativa del vehículo completo de forma atómica.
+
+        Aplica tanto a vehículos registrados como a descartados (auditoría forense/policial).
+        Es independiente de la exportación a alpr.classify.
+        Retorna la ruta absoluta del archivo si se escribió exitosamente, o None si no hay
+        imagen, si snapshots_dir no está configurado, en modo record, o si falla la E/S.
+        """
+        if self.record or not self.options.snapshots_dir or v_track is None:
+            return None
+        if getattr(v_track, "vehicle_evidence_saved", False):
+            return getattr(v_track, "vehicle_evidence_path", None)
+        if v_track.best_vehicle_crop is None or v_track.best_vehicle_crop.size == 0:
+            return None
+
+        if not self.vehicle_evidence_dir:
+            self.vehicle_evidence_dir = os.path.join(self.options.snapshots_dir, "vehiculos")
+        os.makedirs(self.vehicle_evidence_dir, exist_ok=True)
+
+        frame_num = v_track.best_vehicle_frame if v_track.best_vehicle_frame >= 0 else v_track.last_seen_frame
+        name = f"vehiculo_ID{int(v_track.track_id)}_{self.video_stem}_F{int(frame_num)}.jpg"
+        path = os.path.join(self.vehicle_evidence_dir, name)
+
+        try:
+            write_image_atomic(path, v_track.best_vehicle_crop)
+            v_track.vehicle_evidence_saved = True
+            v_track.vehicle_evidence_path = path
+            return path
+        except Exception as exc:
+            logging.warning(f"[evidencia-vehiculo] No se pudo escribir evidencia de vehículo {path}: {exc}")
+            v_track.vehicle_evidence_saved = False
+            v_track.vehicle_evidence_path = None
+            return None
 
     def _finalize_track(self, v_track, reason=CONSENSUS_REASON):
         """Devuelve True solo si se agregó un registro a json_log."""
@@ -275,20 +318,31 @@ class ALPRPipeline:
 
         if outcome == OUTCOME_DUPLICATE:
             self._track_outcome[int(v_track.track_id)] = "duplicada"
+            veh_snap = self._save_vehicle_evidence(v_track)
             self._note_discard(v_track.last_seen_frame, v_track.track_id, "patente_duplicada",
-                               patente=best_plate, detalle=detail)
+                               patente=best_plate, detalle=detail,
+                               recorte_vehiculo=veh_snap,
+                               ultimo_fotograma=int(v_track.last_seen_frame),
+                               tipo_vehiculo=v_track.vehicle_class_name)
             self.stats["records_duplicate"] += 1
             logging.info(f"[DUPLICADO] ID #{v_track.track_id} -> {best_plate} ({detail}, no se registra)")
             return False
         if outcome != OUTCOME_OK:
             self._track_outcome[int(v_track.track_id)] = "rechazada"
+            veh_snap = self._save_vehicle_evidence(v_track)
             self._note_discard(v_track.last_seen_frame, v_track.track_id, "registro_rechazado",
-                               patente=best_plate, detalle=detail)
+                               patente=best_plate, detalle=detail,
+                               recorte_vehiculo=veh_snap,
+                               ultimo_fotograma=int(v_track.last_seen_frame),
+                               tipo_vehiculo=v_track.vehicle_class_name)
             self.stats["records_rejected_invalid"] += 1
             logging.error(f"[export] ID #{v_track.track_id} NO se registra "
                           f"(patente={best_plate!r}): {detail}")
             return False
 
+        veh_snap = self._save_vehicle_evidence(v_track)
+        if veh_snap is not None:
+            record["snapshot_vehiculo_path"] = veh_snap
         self.json_log.append(record)
         self._track_outcome[int(v_track.track_id)] = "registrada"
         self._append_jsonl(record)
@@ -373,7 +427,12 @@ class ALPRPipeline:
         if crop is not None and self.discard_dir is not None and crop.size > 0:
             name = f"F{int(frame_idx)}_ID{int(track_id)}_{reason.split(':')[0]}_{len(self.discards)}.jpg"
             path = os.path.join(self.discard_dir, name)
-            rec["recorte"] = path if cv2.imwrite(path, crop) else None
+            try:
+                write_image_atomic(path, crop)
+                rec["recorte"] = path
+            except Exception as exc:
+                logging.debug(f"[descartes] No se pudo escribir recorte de descarte {path}: {exc}")
+                rec["recorte"] = None
         self.discards.append(rec)
 
     def _log_track_discard(self, v_track):
@@ -391,8 +450,13 @@ class ALPRPipeline:
             extra = {"lecturas": {p: {"votos": v_track.vote_counts[p],
                                       "confianza_media": round(v_track.votes[p] / v_track.vote_counts[p], 3)}
                                   for p in v_track.votes}}
+        veh_snap = self._save_vehicle_evidence(v_track)
+        if veh_snap is not None:
+            extra["recorte_vehiculo"] = veh_snap
         self._note_discard(v_track.last_seen_frame, tid, reason,
-                           tipo_vehiculo=v_track.vehicle_class_name, **extra)
+                           tipo_vehiculo=v_track.vehicle_class_name,
+                           ultimo_fotograma=int(v_track.last_seen_frame),
+                           **extra)
 
     def _note_track_end(self, v_track):
         if self.record and int(v_track.track_id) in self._observations:
@@ -433,6 +497,10 @@ class ALPRPipeline:
             if x2 <= x1 or y2 <= y1:
                 continue
 
+            vehicle_crop = frame[y1:y2, x1:x2]
+            if not self.record:
+                v_track.update_vehicle_evidence(vehicle_crop, frame_idx, (x1, y1, x2, y2))
+
             if v_track.state == TrackState.NEW:
                 self._maybe_activate_ocr(v_track, (x1, y1, x2, y2))
             if v_track.state != TrackState.OCR_ACTIVE:
@@ -448,6 +516,19 @@ class ALPRPipeline:
             if not self.options.disable_focus_mask and (
                     vw < MIN_VEHICLE_CROP_WIDTH or vh < MIN_VEHICLE_CROP_HEIGHT):
                 self.stats["vehicle_crops_skipped"] += 1
+                self.stats["vehicle_crops_too_small"] += 1
+                if not getattr(v_track, "small_crop_logged", False):
+                    self._note_discard(
+                        frame_idx,
+                        v_track.track_id,
+                        "recorte_vehiculo_demasiado_pequeno",
+                        ancho=vw,
+                        alto=vh,
+                        min_ancho=MIN_VEHICLE_CROP_WIDTH,
+                        min_alto=MIN_VEHICLE_CROP_HEIGHT,
+                        tipo_vehiculo=v_track.vehicle_class_name,
+                    )
+                    v_track.small_crop_logged = True
                 v_track.last_ocr_frame = frame_idx
                 continue
 

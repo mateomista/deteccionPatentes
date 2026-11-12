@@ -13,6 +13,8 @@ import os
 
 import cv2
 
+from ..contracts import read_image
+
 from .detection_metrics import average_precision, coco_style_ap, precision_recall_at
 
 
@@ -48,8 +50,13 @@ def main(argv=None):
     preds, gts = [], []
     for start in range(0, len(images), args.batch):
         chunk = images[start:start + args.batch]
-        imgs = [cv2.cvtColor(cv2.imread(os.path.join(args.images_dir, i["file_name"])),
-                             cv2.COLOR_BGR2RGB) for i in chunk]
+        imgs = []
+        for i in chunk:
+            img_path = os.path.join(args.images_dir, i["file_name"])
+            img = read_image(img_path)
+            if img is None:
+                raise FileNotFoundError(f"No se pudo leer la imagen: {img_path}")
+            imgs.append(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
         inputs = processor(images=imgs, return_tensors="pt").to(device)
         sizes = torch.tensor([im.shape[:2] for im in imgs]).to(device)
         with torch.inference_mode():

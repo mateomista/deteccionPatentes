@@ -20,6 +20,7 @@ import time
 import cv2
 
 from ..inference import add_threshold_args, thresholds_from_args
+from ..contracts import read_image
 from ..ocr import PlateOCR
 from .metrics import ocr_metrics
 
@@ -52,9 +53,10 @@ def main(argv=None):
 
     crops = []
     for r in rows:
-        img = cv2.imread(os.path.join(args.crops_dir, r["image"]))
+        crop_path = os.path.join(args.crops_dir, r["image"])
+        img = read_image(crop_path)
         if img is None:
-            raise FileNotFoundError(os.path.join(args.crops_dir, r["image"]))
+            raise FileNotFoundError(crop_path)
         crops.append((img, r["plate"], (r.get("vehicle_class") or "default").strip() or "default"))
 
     results = {}
