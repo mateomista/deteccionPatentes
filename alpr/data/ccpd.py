@@ -17,6 +17,11 @@ import os
 
 IMG_EXTS = (".jpg", ".jpeg", ".png")
 
+try:
+    from ..contracts import read_image
+except (ImportError, ValueError):
+    from alpr.contracts import read_image
+
 
 def to_posix(path):
     """Rutas del JSON COCO siempre con '/': en Windows os.path.relpath devuelve
@@ -43,34 +48,40 @@ def parse_ccpd_bbox(filename):
 
 def _image_size(path):
     try:
-        from PIL import Image
-        with Image.open(path) as im:
-            return im.size   # (w, h), lee solo el header
+        from PIL import Image, UnidentifiedImageError
+        try:
+            with Image.open(path) as im:
+                return im.size   # (w, h), lee solo el header
+        except (UnidentifiedImageError, OSError):
+            return None
     except ImportError:
-        import cv2
-        img = cv2.imread(path)
+        img = read_image(path)
         return (img.shape[1], img.shape[0]) if img is not None else None
 
 
 def build_coco(images_dir, rel_to=None):
     rel_to = rel_to or images_dir
-    images, annotations, skipped = [], [], 0
+    images, annotations = [], []
+    skipped_reasons = {"invalid_bbox": 0, "unreadable_image": 0, "degenerated_box": 0}
     next_ann = 1
     for root, _, files in os.walk(images_dir):
         for fn in sorted(files):
             if not fn.lower().endswith(IMG_EXTS):
                 continue
             box = parse_ccpd_bbox(fn)
+            if box is None:
+                skipped_reasons["invalid_bbox"] += 1
+                continue
             full = os.path.join(root, fn)
-            size = _image_size(full) if box else None
-            if box is None or size is None:
-                skipped += 1
+            size = _image_size(full)
+            if size is None:
+                skipped_reasons["unreadable_image"] += 1
                 continue
             w, h = size
             x1, y1, x2, y2 = box
             x1, y1, x2, y2 = max(0, x1), max(0, y1), min(w, x2), min(h, y2)
             if x2 <= x1 or y2 <= y1:
-                skipped += 1
+                skipped_reasons["degenerated_box"] += 1
                 continue
             image_id = len(images) + 1
             images.append({"id": image_id, "file_name": to_posix(os.path.relpath(full, rel_to)),
@@ -79,6 +90,9 @@ def build_coco(images_dir, rel_to=None):
                                 "bbox": [x1, y1, x2 - x1, y2 - y1],
                                 "area": (x2 - x1) * (y2 - y1), "iscrowd": 0})
             next_ann += 1
+    skipped = sum(skipped_reasons.values())
+    if skipped_reasons["unreadable_image"] > 0:
+        print(f"[CCPD] Advertencia: {skipped_reasons['unreadable_image']} imágenes no pudieron leerse.")
     return {"info": {"description": "CCPD -> COCO"},
             "categories": [{"id": 0, "name": "plate"}],
             "images": images, "annotations": annotations}, skipped

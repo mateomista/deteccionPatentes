@@ -37,15 +37,16 @@ FINALIZATION_REASONS = (CONSENSUS_REASON,) + RECOVERED_REASONS
 # ------------------------------------------------------------------------------
 # [FIX-v3 #2] El rango de aspecto depende de la clase de vehículo. Las chapas de
 # auto son apaisadas (la Mercosur de automóvil es de 400x130 mm, aspecto ~3.1).
-# Las de moto son de DOS líneas y aproximadamente cuadradas, así que con un piso
-# de 1.4 el pipeline las descartaba silenciosamente antes de llegar al OCR.
+# El rango default [1.2, 5.8] es una ablación sobre video real: amplía la
+# tolerancia a perspectiva/recortes inclinados, manteniendo un límite para
+# regiones casi cuadradas. Las de moto pueden ser de DOS líneas y casi cuadradas.
 # NOTA: no pude confirmar los milímetros exactos de la placa de motovehículo en
 # la normativa; el piso de 0.9 es deliberadamente permisivo. Calibralo con tus
 # propios recortes de moto antes de publicar métricas.
 PLATE_GEOMETRY = {
     # clase: (min_w, min_h, aspect_min, aspect_max)
     "motorcycle": (36, 20, 0.9, 3.0),
-    "default":    (48, 16, 1.4, 5.5),
+    "default":    (48, 16, 1.2, 5.8),
 }
 MIN_GRAY_STD = 12.0   # desvío de gris mínimo: región uniforme => no hay texto
 

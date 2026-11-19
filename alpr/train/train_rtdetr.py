@@ -25,6 +25,8 @@ import re
 import cv2
 import numpy as np
 
+from ..contracts import read_image
+
 
 class CocoPlateDataset:
     """Dataset COCO de una clase. Devuelve lo que espera RTDetrForObjectDetection:
@@ -47,9 +49,10 @@ class CocoPlateDataset:
 
     def __getitem__(self, idx):
         info = self.images[idx]
-        img = cv2.imread(os.path.join(self.images_dir, info["file_name"]))
+        img_path = os.path.join(self.images_dir, info["file_name"])
+        img = read_image(img_path)
         if img is None:
-            raise FileNotFoundError(os.path.join(self.images_dir, info["file_name"]))
+            raise FileNotFoundError(img_path)
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         h, w = img.shape[:2]
 

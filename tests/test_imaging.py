@@ -59,3 +59,21 @@ def test_focus_mask_geometry_by_vehicle_class():
     ok, reason = has_plate_characteristics(flat, "car")
     assert not ok and "desvio_gris" in reason
     assert not has_plate_characteristics(np.zeros((5, 5, 3), np.uint8), "car")[0]
+
+
+def test_focus_mask_aspect_ablation_bounds_are_inclusive():
+    rng = np.random.default_rng(1)
+
+    below_min = rng.integers(0, 255, (100, 119, 3), dtype=np.uint8)  # 1.19
+    ok, reason = has_plate_characteristics(below_min, "car")
+    assert not ok and "aspecto" in reason
+
+    at_min = rng.integers(0, 255, (100, 120, 3), dtype=np.uint8)  # 1.20
+    assert has_plate_characteristics(at_min, "car")[0]
+
+    at_max = rng.integers(0, 255, (20, 116, 3), dtype=np.uint8)  # 5.80
+    assert has_plate_characteristics(at_max, "car")[0]
+
+    above_max = rng.integers(0, 255, (20, 117, 3), dtype=np.uint8)  # 5.85
+    ok, reason = has_plate_characteristics(above_max, "car")
+    assert not ok and "aspecto" in reason

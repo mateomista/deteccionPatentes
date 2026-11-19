@@ -20,7 +20,10 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import TYPE_CHECKING, Optional, Tuple, Union
+
+if TYPE_CHECKING:
+    import numpy as np
 
 PREFIX = "vehiculo"
 SEPARATOR = "__"
@@ -87,3 +90,36 @@ def write_image_atomic(path, image, jpeg_quality: int = 95, retries: int = 3, de
     except OSError:
         pass
     raise OSError(f"No se pudo escribir {path} tras {retries} intentos: {last_exc}")
+
+
+def read_image(path: Union[str, Path], flags: int = 1) -> Optional["np.ndarray"]:
+    """Lee una imagen desde disco compatible con rutas Unicode en Windows mediante np.fromfile() y cv2.imdecode().
+
+    Devuelve:
+      - ndarray BGR (o según flags) si la imagen es válida.
+      - None si el archivo no existe, está vacío (0 bytes) o no se puede decodificar como imagen.
+
+    Lanza:
+      - IsADirectoryError si `path` apunta a un directorio.
+      - OSError / PermissionError ante fallos reales e inesperados de acceso a disco (no silenciados).
+    """
+    import cv2
+    import numpy as np
+
+    p = Path(path)
+    if not p.exists():
+        return None
+    if p.is_dir():
+        raise IsADirectoryError(f"La ruta es un directorio, no un archivo: {path}")
+
+    try:
+        data = np.fromfile(str(p), dtype=np.uint8)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise
+
+    if data.size == 0:
+        return None
+
+    return cv2.imdecode(data, flags)
