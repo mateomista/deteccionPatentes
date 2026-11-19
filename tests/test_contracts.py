@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from alpr import contracts
-from alpr.contracts import (parse_vehicle_crop_stem, sanitize_video_stem, vehicle_crop_filename,
+from alpr.contracts import (parse_vehicle_crop_stem, read_image, sanitize_video_stem, vehicle_crop_filename,
                             write_image_atomic)
 
 
@@ -75,3 +75,98 @@ def test_write_retries_transient_lock(tmp_path, monkeypatch):
 def test_write_rejects_unencodable_image(tmp_path):
     with pytest.raises(Exception):
         write_image_atomic(tmp_path / "vehiculo_1.jpg", None)
+
+
+def test_read_image_unicode_path(tmp_path):
+    img = np.random.default_rng(42).integers(0, 255, (40, 60, 3), dtype=np.uint8)
+    sub = tmp_path / "carpeta con ñ y tildes áéíóú"
+    path = sub / "imagen_prueba.png"
+    write_image_atomic(path, img)
+
+    loaded = read_image(path)
+    assert loaded is not None
+    assert loaded.shape == img.shape
+    assert np.array_equal(loaded, img)
+
+
+def test_read_image_nonexistent(tmp_path):
+    assert read_image(tmp_path / "no_existe_archivo.jpg") is None
+
+
+def test_read_image_directory_raises_is_a_directory_error(tmp_path):
+    d = tmp_path / "directorio_prueba"
+    d.mkdir()
+    with pytest.raises(IsADirectoryError):
+        read_image(d)
+
+
+def test_read_image_empty_file(tmp_path):
+    empty = tmp_path / "vacio.jpg"
+    empty.touch()
+    assert read_image(empty) is None
+
+
+def test_read_image_corrupt_file(tmp_path):
+    corrupt = tmp_path / "corrupto.jpg"
+    corrupt.write_bytes(b"esto no es una imagen real")
+    assert read_image(corrupt) is None
+
+
+def test_write_and_read_roundtrip_unicode(tmp_path):
+    img = np.random.default_rng(123).integers(0, 255, (50, 50, 3), dtype=np.uint8)
+    path = tmp_path / "ruta_con_ñ_y_espacios" / "sub_carpeta" / "foto.jpg"
+    write_image_atomic(path, img, jpeg_quality=100)
+
+    loaded = read_image(path)
+    assert loaded is not None
+    assert loaded.shape == img.shape
+    assert loaded.dtype == np.uint8
+
+
+def test_read_image_propagates_oserror(tmp_path, monkeypatch):
+    p = tmp_path / "perm_error.jpg"
+    p.touch()
+    def fake_fromfile(*args, **kwargs):
+        raise PermissionError("Acceso denegado simulado")
+    monkeypatch.setattr(np, "fromfile", fake_fromfile)
+    with pytest.raises(PermissionError):
+        read_image(p)
+
+
+def test_coco_plate_dataset_reads_unicode_path(tmp_path):
+    import json
+    from alpr.train.train_rtdetr import CocoPlateDataset
+
+    img_dir = tmp_path / "imágenes con acentos y ñ"
+    img_dir.mkdir()
+    img_name = "foto_1.jpg"
+    img = np.zeros((100, 100, 3), dtype=np.uint8)
+    write_image_atomic(img_dir / img_name, img)
+
+    ann_file = tmp_path / "ann.json"
+    ann_file.write_text(json.dumps({
+        "images": [{"id": 1, "file_name": img_name}],
+        "annotations": [{"id": 1, "image_id": 1, "bbox": [10, 10, 50, 20], "area": 1000}]
+    }), encoding="utf-8")
+
+    def mock_processor(images, annotations, return_tensors):
+        return {"pixel_values": [images], "labels": [annotations]}
+
+    ds = CocoPlateDataset(str(ann_file), str(img_dir), mock_processor)
+    item = ds[0]
+    assert item["pixel_values"].shape == (100, 100, 3)
+
+
+def test_coco_plate_dataset_raises_on_missing_image(tmp_path):
+    import json
+    from alpr.train.train_rtdetr import CocoPlateDataset
+
+    ann_file = tmp_path / "ann.json"
+    ann_file.write_text(json.dumps({
+        "images": [{"id": 1, "file_name": "inexistente.jpg"}],
+        "annotations": []
+    }), encoding="utf-8")
+
+    ds = CocoPlateDataset(str(ann_file), str(tmp_path), None)
+    with pytest.raises(FileNotFoundError):
+        _ = ds[0]

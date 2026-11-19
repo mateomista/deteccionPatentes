@@ -101,3 +101,16 @@ def test_to_posix_converts_windows_separators():
     from alpr.data.ccpd import to_posix
     assert to_posix("sub\\x.jpg") == "sub/x.jpg"
     assert to_posix("sub/x.jpg") == "sub/x.jpg"
+
+
+def test_build_coco_with_unicode_path_and_unreadable_file(tmp_path):
+    from PIL import Image
+    uni_dir = tmp_path / "imágenes con tildes y ñ"
+    uni_dir.mkdir()
+    Image.new("RGB", (720, 1160)).save(uni_dir / CCPD_NAME)
+    corrupt_name = "025-95_113-100&200_300&400-300&400_150&350_100&200_250&250-0_0_22_27_27_33_16-37-15.jpg"
+    (uni_dir / corrupt_name).write_bytes(b"corrupt non-image")
+    coco, skipped = build_coco(str(uni_dir))
+    assert len(coco["images"]) == 1
+    assert skipped == 1
+    assert coco["images"][0]["width"] == 720

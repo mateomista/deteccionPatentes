@@ -1,4 +1,5 @@
 """Estado por vehículo: votos, evidencia y criterio de consenso."""
+import numpy as np
 from collections import defaultdict
 from enum import Enum
 
@@ -44,6 +45,34 @@ class VehicleTrack:
         self.evidence = defaultdict(PlateEvidence)
 
         self.best_plate_text = None
+
+        # Evidencia representativa del vehículo completo (Fase 2 / H-1)
+        self.best_vehicle_crop = None
+        self.best_vehicle_frame = -1
+        self.best_vehicle_bbox = None
+        self.best_vehicle_area = 0
+        self.vehicle_evidence_saved = False
+        self.vehicle_evidence_path = None
+        self.small_crop_logged = False
+
+    def update_vehicle_evidence(self, crop, frame_idx, bbox):
+        """Actualiza la evidencia representativa del vehículo según un criterio determinista.
+
+        Criterio: mayor área (ancho * alto) del recorte del vehículo, desempatando por
+        fotograma más reciente. A mayor área, el vehículo se encuentra más cerca de la cámara
+        u ocupando mayor resolución dentro del encuadre, lo que brinda mayor nitidez para
+        rasgos identificatorios (marca, modelo, color) y minimiza artefactos de perspectiva.
+        Mantiene una única copia en memoria para no saturar RAM.
+        """
+        if crop is None or crop.size == 0:
+            return
+        h, w = crop.shape[:2]
+        area = w * h
+        if area >= self.best_vehicle_area:
+            self.best_vehicle_area = area
+            self.best_vehicle_crop = crop.copy()
+            self.best_vehicle_frame = int(frame_idx)
+            self.best_vehicle_bbox = np.array(bbox, dtype=np.int32).copy() if bbox is not None else None
 
     def add_vote(self, text, confidence, frame_idx, plate_crop, processed_crop, vehicle_bbox,
                  vehicle_crop=None):
